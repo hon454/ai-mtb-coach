@@ -1,0 +1,370 @@
+{
+ "note": "사용자가 보드에 그린 핸들바 선(사람 판단, 측정값 아님). 좌표는 768px 크롭(outputs/<세션>/left_bank_lean/crops) 기준. a=왼쪽 끝, b=오른쪽 끝(이미지 기준). angle은 +면 오른쪽이 올라감(°). visible_end는 몸에 가리지 않은 쪽 손(그 쪽 그립만 위치 제약). 같은 프레임을 여러 번 그리면 lines에 모두 둔다.",
+ "drawn": "2026-11-23",
+ "hints": [
+  {
+   "run": 1,
+   "frame": 168,
+   "visible_end": "right",
+   "lines": [
+    {
+     "a": [
+      328.7,
+      360.3
+     ],
+     "b": [
+      520.0,
+      325.8
+     ],
+     "angle": 10.2,
+     "source": "bar_hint_draw_run1 (user_drawn_bar_hint_draw_run1.webp)"
+    }
+   ]
+  },
+  {
+   "run": 1,
+   "frame": 173,
+   "visible_end": "right",
+   "lines": [
+    {
+     "a": [
+      306.6,
+      366.2
+     ],
+     "b": [
+      515.3,
+      308.4
+     ],
+     "angle": 15.5,
+     "source": "bar_hint_draw_run1 (user_drawn_bar_hint_draw_run1.webp)"
+    }
+   ]
+  },
+  {
+   "run": 1,
+   "frame": 177,
+   "visible_end": "right",
+   "lines": [
+    {
+     "a": [
+      320.2,
+      388.0
+     ],
+     "b": [
+      500.6,
+      300.0
+     ],
+     "angle": 26.0,
+     "source": "bar_hint_draw_run1 (user_drawn_bar_hint_draw_run1.webp)"
+    }
+   ]
+  },
+  {
+   "run": 1,
+   "frame": 181,
+   "visible_end": "right",
+   "lines": [
+    {
+     "a": [
+      321.4,
+      390.8
+     ],
+     "b": [
+      489.0,
+      288.0
+     ],
+     "angle": 31.5,
+     "source": "bar_hint_draw_run1 (user_drawn_bar_hint_draw_run1.webp)"
+    }
+   ]
+  },
+  {
+   "run": 1,
+   "frame": 185,
+   "visible_end": "right",
+   "lines": [
+    {
+     "a": [
+      284.8,
+      388.4
+     ],
+     "b": [
+      475.0,
+      266.6
+     ],
+     "angle": 32.6,
+     "source": "bar_hint_draw_run1 (user_drawn_bar_hint_draw_run1.webp)"
+    }
+   ]
+  },
+  {
+   "run": 1,
+   "frame": 189,
+   "visible_end": "right",
+   "lines": [
+    {
+     "a": [
+      256.8,
+      383.7
+     ],
+     "b": [
+      429.3,
+      247.4
+     ],
+     "angle": 38.3,
+     "source": "bar_hint_draw_run1 (user_drawn_bar_hint_draw_run1.webp)"
+    }
+   ]
+  },
+  {
+   "run": 3,
+   "frame": 216,
+   "visible_end": "right",
+   "lines": [
+    {
+     "a": [
+      302.7,
+      371.5
+     ],
+     "b": [
+      476.1,
+      293.4
+     ],
+     "angle": 24.2,
+     "source": "fit_fix4_compare 그림 (fix4 칸)"
+    }
+   ]
+  },
+  {
+   "run": 4,
+   "frame": 216,
+   "visible_end": "right",
+   "lines": [
+    {
+     "a": [
+      296.4,
+      367.1
+     ],
+     "b": [
+      491.2,
+      314.8
+     ],
+     "angle": 15.0,
+     "source": "fit_fix4_compare 그림 (fix3 칸)"
+    },
+    {
+     "a": [
+      284.8,
+      367.0
+     ],
+     "b": [
+      484.0,
+      311.8
+     ],
+     "angle": 15.5,
+     "source": "fit_fix4_compare 그림 (fix4 칸)"
+    }
+   ]
+  },
+  {
+   "run": 4,
+   "frame": 221,
+   "visible_end": "right",
+   "lines": [
+    {
+     "a": [
+      290.7,
+      358.0
+     ],
+     "b": [
+      445.8,
+      275.7
+     ],
+     "angle": 28.0,
+     "source": "fit_fix4_compare 그림 (fix3 칸)"
+    },
+    {
+     "a": [
+      304.1,
+      372.0
+     ],
+     "b": [
+      457.8,
+      273.4
+     ],
+     "angle": 32.7,
+     "source": "fit_fix4_compare 그림 (fix4 칸)"
+    }
+   ]
+  },
+  {
+   "run": 4,
+   "frame": 226,
+   "visible_end": "right",
+   "lines": [
+    {
+     "a": [
+      285.5,
+      332.7
+     ],
+     "b": [
+      429.6,
+      245.2
+     ],
+     "angle": 31.3,
+     "source": "fit_fix4_compare 그림 (fix3 칸)"
+    },
+    {
+     "a": [
+      269.2,
+      326.9
+     ],
+     "b": [
+      442.5,
+      244.0
+     ],
+     "angle": 25.6,
+     "source": "fit_fix4_compare 그림 (fix4 칸)"
+    }
+   ]
+  },
+  {
+   "run": 5,
+   "frame": 208,
+   "visible_end": "right",
+   "lines": [
+    {
+     "a": [
+      256.7,
+      347.9
+     ],
+     "b": [
+      426.9,
+      258.5
+     ],
+     "angle": 27.7,
+     "source": "fit_fix4_compare 그림 (fix3 칸)"
+    },
+    {
+     "a": [
+      272.4,
+      352.7
+     ],
+     "b": [
+      426.3,
+      273.9
+     ],
+     "angle": 27.1,
+     "source": "fit_fix4_compare 그림 (fix4 칸)"
+    }
+   ]
+  },
+  {
+   "run": 7,
+   "frame": 172,
+   "visible_end": "right",
+   "lines": [
+    {
+     "a": [
+      295.2,
+      362.8
+     ],
+     "b": [
+      492.9,
+      294.0
+     ],
+     "angle": 19.2,
+     "source": "bar_hint_draw_run7 (user_drawn_bar_hint_draw_run7.webp)"
+    }
+   ]
+  },
+  {
+   "run": 7,
+   "frame": 177,
+   "visible_end": "right",
+   "lines": [
+    {
+     "a": [
+      297.4,
+      380.0
+     ],
+     "b": [
+      484.8,
+      281.1
+     ],
+     "angle": 27.8,
+     "source": "bar_hint_draw_run7 (user_drawn_bar_hint_draw_run7.webp)"
+    }
+   ]
+  },
+  {
+   "run": 7,
+   "frame": 181,
+   "visible_end": "right",
+   "lines": [
+    {
+     "a": [
+      285.8,
+      385.3
+     ],
+     "b": [
+      446.7,
+      269.9
+     ],
+     "angle": 35.6,
+     "source": "bar_hint_draw_run7 (user_drawn_bar_hint_draw_run7.webp)"
+    }
+   ]
+  },
+  {
+   "run": 7,
+   "frame": 183,
+   "visible_end": "right",
+   "lines": [
+    {
+     "a": [
+      276.1,
+      388.5
+     ],
+     "b": [
+      442.2,
+      295.7
+     ],
+     "angle": 29.2,
+     "source": "fit_fix4_compare 그림 (fix3 칸)"
+    },
+    {
+     "a": [
+      283.8,
+      393.7
+     ],
+     "b": [
+      440.6,
+      302.3
+     ],
+     "angle": 30.2,
+     "source": "fit_fix4_compare 그림 (fix4 칸)"
+    }
+   ]
+  },
+  {
+   "run": 7,
+   "frame": 185,
+   "visible_end": "right",
+   "lines": [
+    {
+     "a": [
+      273.5,
+      379.1
+     ],
+     "b": [
+      413.0,
+      260.5
+     ],
+     "angle": 40.4,
+     "source": "bar_hint_draw_run7 (user_drawn_bar_hint_draw_run7.webp)"
+    }
+   ]
+  }
+ ]
+}

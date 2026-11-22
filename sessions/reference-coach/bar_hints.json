@@ -1,0 +1,81 @@
+{
+ "note": "사용자가 보드에 그린 핸들바 선(사람 판단, 측정값 아님). 좌표는 768px 크롭(outputs/<세션>/left_bank_lean/crops) 기준. a=왼쪽 끝, b=오른쪽 끝(이미지 기준). angle은 +면 오른쪽이 올라감(°). visible_end는 몸에 가리지 않은 쪽 손(그 쪽 그립만 위치 제약). 같은 프레임을 여러 번 그리면 lines에 모두 둔다.",
+ "hints": [
+  {
+   "run": 0,
+   "frame": 217,
+   "visible_end": "right",
+   "lines": [
+    {
+     "a": [
+      318.3,
+      396.1
+     ],
+     "b": [
+      518.3,
+      353.3
+     ],
+     "angle": 12.1,
+     "source": "bar_hint_draw_run0 (user_drawn_bar_hint_draw_run0.webp)"
+    }
+   ]
+  },
+  {
+   "run": 0,
+   "frame": 221,
+   "visible_end": "right",
+   "lines": [
+    {
+     "a": [
+      321.8,
+      352.1
+     ],
+     "b": [
+      519.0,
+      292.9
+     ],
+     "angle": 16.7,
+     "source": "bar_hint_draw_run0 (user_drawn_bar_hint_draw_run0.webp)"
+    }
+   ]
+  },
+  {
+   "run": 0,
+   "frame": 225,
+   "visible_end": "right",
+   "lines": [
+    {
+     "a": [
+      281.9,
+      328.0
+     ],
+     "b": [
+      511.4,
+      263.7
+     ],
+     "angle": 15.6,
+     "source": "bar_hint_draw_run0 (user_drawn_bar_hint_draw_run0.webp)"
+    }
+   ]
+  },
+  {
+   "run": 0,
+   "frame": 230,
+   "visible_end": "right",
+   "lines": [
+    {
+     "a": [
+      282.9,
+      364.9
+     ],
+     "b": [
+      492.3,
+      251.7
+     ],
+     "angle": 28.4,
+     "source": "bar_hint_draw_run0 (user_drawn_bar_hint_draw_run0.webp)"
+    }
+   ]
+  }
+ ]
+}

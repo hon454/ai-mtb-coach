@@ -20,7 +20,8 @@ ai-mtb-coach: MTB 강습 영상(코치님 카톡 영상 + 텍스트 피드백)�
   - `analyze_pose.py` 라이더 추적·크롭·뼈대, 동기화 그리드
   - `analyze_lean.py` 크롭 재인식(자세·관절각)
   - `bike_sam2.py` SAM2 자전거 마스크(`--kp-prompt`: 포즈 키포인트 프롬프트)
-  - `bike_fit.py` 3D 자전거 실루엣 맞추기(기울기·yaw). 자전거 지오메트리는 segments.json의 `"bike"`
+  - `bike_fit.py` 3D 자전거 실루엣 맞추기(기울기·yaw). 자전거 지오메트리는 segments.json의 `"bike"`. 사용자가 그린 핸들바 선(`sessions/<세션>/bar_hints.json`)을 힌트로 씀(`--no-hints`로 끔)
+  - `bar_hint_board.py` 핸들바 선 그리기 보드(`make`)와 그린 선 추출(`extract`)
   - `compare_reference.py` 코치 vs 내 런 정렬 비교
   - `berm_line.py` 뱅크 배경판·벽면 분할·타이어 접지 궤적
   - `insight_board.py` 인사이트 장면 보드(spec JSON)

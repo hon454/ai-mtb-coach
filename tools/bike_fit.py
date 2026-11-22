@@ -11,6 +11,12 @@
 사용법 (analyze_lean.py → bike_sam2.py 다음):
     uv run python tools/bike_fit.py sessions/2026-11-21/segments.json [--runs 1] [--workers 24]
     uv run python tools/bike_fit.py sessions/reference-coach/segments.json --runs 0
+    옵션: --no-hints (그린 핸들바 선 끄기), --hint-exclude 4:216 (한 장 빼기 검증), --wrist-relax (뒷모습 손목 완화),
+          --out-dir DIR (CSV·오버레이를 따로 씀, 변형 비교용)
+
+핸들바 선 힌트: sessions/<세션>/bar_hints.json(사용자가 보드에 그린 선, 사람 판단)이 있으면 그 프레임에만
+    그립-그립 각도 사전 + 보이는 쪽 그립의 선까지 거리 항을 건다 (W_HINT_ANG/POS 주석). 뒷모습에서 바 각도는
+    yaw에 거의 무관하게 lean을 직접 보여 주므로, 실루엣만으로 수렴하지 않는 프레임을 사람이 고정하는 용도.
 
 좌표: 자전거 X=앞, Y=위, Z=라이더 왼쪽. 원점=BB. 단위 mm.
 lean +: 라이더 왼쪽으로 기움 (카메라 수평 가정, 중력 기준).
@@ -36,7 +42,9 @@ yaw 0: 카메라에서 멀어지는 방향(완전한 뒷모습). ±90: 옆모습
     fit_lean_unc(거의 같은 손실의 다른 해와의 lean 차, 하한), fit_sign_ambig(1=부호는 연속성이 정함),
     fit_scale(px/m @192), fit_occl(berm_line occl_wheel: 1=바퀴 아래가 앞 둔덕에 가림), fit_axis_err(뒷모습 2D 주축 차),
     fit_ncomp(주 성분과 떨어진 가늘고 긴 마스크 성분 수, 진단용 — 덮기 항 W_COMP는 현재 0),
-    fit_lowconf(1=IoU<0.45, 또는 |yaw|<35에서 IoU<0.55·주축 차>10°·lean_unc>15° → 분리각 통계에서 제외).
+    fit_lowconf(1=IoU<0.45, 또는 |yaw|<35에서 IoU<0.55·주축 차>10°·lean_unc>15° → 분리각 통계에서 제외),
+    fit_hint(그린 핸들바 선 힌트를 쓴 프레임: 1=보이는 손 쪽 위치도 맞춤, 2=손이 숨어 위치 제약을 느슨하게;
+    이 프레임의 fit_lowconf는 IoU 기준만 본다).
     bike 블록: wheel_radius_front/rear(멀렛), bb_height(>0이면 허브 높이 = 반지름 − BB 높이), 예전 wheel_radius도 허용.
 한계: 정사영(원근 무시), 카메라 수평 가정 — 옆모습의 lean 크기는 카메라 높이각만큼 오차가 날 수 있다.
 """
@@ -329,6 +337,9 @@ def kp_term(auv, s, tx, ty, kpts):
     for x, y, w, kind in kpts:
         if kind == 7:
             continue
+        if kind == 8:  # 핸들바 선 힌트 (x = dict)
+            extra += w * hint_term(auv, s, tx, ty, x)
+            continue
         if kind == 2:  # 진행 방향의 화면 x성분과 (머리−엉덩이) 부호가 반대면 벌점
             fx = (auv[3, 0] - auv[2, 0]) / 1000.0
             if fx * x < 0:
@@ -359,6 +370,73 @@ def kp_term(auv, s, tx, ty, kpts):
 # (W=0.15: f212 +41°, 0.05: f209–f222 +29~45°, 0.03: f212는 유지되나 f216 띠는 여전히 안 덮이고 f221 +30°).
 # 성분 탐지(fit_ncomp)는 진단용으로 남긴다.
 W_COMP = 0.0
+
+# 사용자가 보드에 그린 핸들바 선(sessions/<세션>/bar_hints.json, 사람 판단) → 힌트 프레임에만 거는 항. kpts 항목 (dict, 0, w, 8).
+#   각도: 화면상 그립-그립 선의 기울기 ↔ 그린 선 평균 각도. σ = √(3.5² + 그린 선끼리 차² + 조향 여유 2.5²)°
+#     (뒷모습에서 바 각도 ≒ lean, yaw ±10°에 1.5° 이내. 핸들을 5° 꺾으면 바가 약 2.5° 더 기욺.
+#      같은 프레임을 두 번 그린 10쌍에서 각도 차 중앙 2°, RMS 5° → 한 번 그린 선의 σ ≈ 3.5°)
+#   위치: 보이는 쪽 그립(손목 오프셋을 뺀 바 중심선 위 점) ↔ 그린 선(무한 직선)까지 수직거리.
+#     그 쪽 손목 키포인트 신뢰도 ≥ 0.6이면 σ 10px@768, 아니면(손이 몸 뒤로 숨음) σ 25px — 두 번 그린 선의 오른쪽 끝이
+#     보통 8px 차이지만 손이 숨은 깊은 기울기 프레임에서는 24–30px 달랐다. 반대쪽(가린) 그립은 위치 제약 없음.
+#   손실에 들어가므로 후보 점수·Viterbi 데이터항에도 반영되고, 연속성 항이 이웃 프레임을 끌어당긴다.
+W_HINT_ANG, W_HINT_POS = 0.03, 0.03
+HINT_SIG_POS = 10.0 * GRID / 768          # px@GRID, 보이는 손
+HINT_SIG_POS_HIDDEN = 10.0 * GRID / 768   # 손이 숨은 프레임. 25px로 느슨하게 하면 힌트 이웃 프레임이 나빠졌다
+                                          # (힌트로 안 쓴 그림 25프레임 채점: 25px 7.3°, 10px 6.2°, 힌트 없음 6.5°)
+HINT_HAND_CONF = 0.6
+HINT_ANG_CAP = 5.0                 # 각도 항 최대 5σ
+WRIST_RELAX = False                # --wrist-relax (wrist_ok 참고)
+
+
+def bar_grips_uv(auv):
+    """화면상 바 중심선 위 그립 점 2개 (단위 배율). 앵커 0,1은 손목 위치(그립 + WRIST_OFF)이므로 오프셋을 뺀다.
+    오프셋은 X·Y 성분뿐이라 앵커 3(진행축 ×1000)·−1(위쪽축 ×1000)의 화면 투영으로 계산 (거울쌍 불변)."""
+    off = (WRIST_OFF[0] * auv[3] + WRIST_OFF[1] * auv[-1]) / 1000.0
+    return auv[0:2] - off
+
+
+def hint_term(auv, s, tx, ty, h):
+    g = bar_grips_uv(auv) * s + [tx, ty]
+    g = g[np.argsort(g[:, 0])]   # 화면 왼쪽 → 오른쪽 (거울쌍에서도 같은 두 점)
+    v = g[1] - g[0]
+    ang = math.degrees(math.atan2(-v[1], v[0]))
+    e = min(abs(ang - h["ang"]) / h["sig_ang"], HINT_ANG_CAP)
+    t = W_HINT_ANG * e * e
+    if h.get("side") in ("left", "right"):
+        q = g[1] if h["side"] == "right" else g[0]
+        ca, sa = math.cos(math.radians(h["ang"])), -math.sin(math.radians(h["ang"]))
+        d = abs((q[0] - h["px"]) * sa - (q[1] - h["py"]) * ca)
+        e2 = d / h["sig_pos"]
+        t += W_HINT_POS * e2 * e2 / (1 + e2 * e2 / 9)   # 3σ 넘으면 포화 (그린 높이가 틀렸을 수 있음)
+    return t
+
+
+def load_hints(seg_path, exclude=()):
+    """sessions/<세션>/bar_hints.json → {(run, frame): 힌트 dict (GRID 좌표)}. exclude: 빼 둘 (run, frame) — 한 장 빼기 검증용."""
+    import analyze_lean as AL
+    p = Path(seg_path).parent / "bar_hints.json"
+    if not p.exists():
+        return {}
+    k = GRID / AL.CROP
+    out = {}
+    for h in json.loads(p.read_text(encoding="utf-8")).get("hints", []):
+        key = (int(h["run"]), int(h["frame"]))
+        if key in exclude or not h.get("lines"):
+            continue
+        side = h.get("visible_end")
+        angs, pts, segs = [], [], []
+        for ln in h["lines"]:
+            (ax, ay), (bx, by) = ln["a"], ln["b"]
+            if ax > bx:
+                (ax, ay), (bx, by) = (bx, by), (ax, ay)
+            angs.append(math.degrees(math.atan2(-(by - ay), bx - ax)))
+            pts.append((bx, by) if side == "right" else (ax, ay) if side == "left" else ((ax + bx) / 2, (ay + by) / 2))
+            segs.append(((ax, ay), (bx, by)))
+        spread = max(angs) - min(angs)
+        px, py = np.mean(pts, 0)
+        out[key] = dict(ang=float(np.mean(angs)), sig_ang=math.sqrt(3.5 ** 2 + spread ** 2 + 2.5 ** 2), side=side,
+                        px=float(px * k), py=float(py * k), sig_pos=HINT_SIG_POS, n=len(angs), segs_crop=segs)
+    return out
 
 
 def comp_term(Rm, kpts):
@@ -453,6 +531,10 @@ def fit_frame(args):
         if k == 7:  # 성분 마스크를 거친 해상도로
             cm = cv2.resize(x.astype(np.uint8), (CGRID, CGRID), interpolation=cv2.INTER_AREA) > 0
             hand_c.append((cm, max(1, int(cm.sum())), w, k))
+        elif k == 8:  # 힌트: 점·거리 척도를 거친 해상도로
+            hc = dict(x)
+            hc["px"], hc["py"], hc["sig_pos"] = x["px"] * kc, x["py"] * kc, x["sig_pos"] * kc
+            hand_c.append((hc, y, w, k))
         else:
             hand_c.append((x, y, w, k) if k == 2 else (x + math.log(kc), y, w, k) if k == 3
                           else (x * kc, y, w, k) if k in (5, 6) else (x * kc, y * kc, w, k))
@@ -553,13 +635,25 @@ def ignore_mask(row_kp, size):
 
 def wrist_ok(k, c, i):
     """뒷모습에서 몸통 뒤에 가린 손은 YOLO가 등·팔꿈치 근처에 낮은 신뢰도로 찍는다 → 핸들바를 끌지 않게 거른다.
-    조건: 손목 신뢰도 ≥ 0.5, 팔꿈치 신뢰도 ≥ 0.5, 팔뚝/위팔 길이비 0.5–1.5."""
+    조건: 손목 신뢰도 ≥ 0.5, 팔꿈치 신뢰도 ≥ 0.5, 팔뚝/위팔 길이비 0.5–1.5.
+    --wrist-relax: 뒷모습에서 진짜 팔뚝은 앞(바 쪽)으로 뻗어 짧아 보인다(run4 f216 오른손 0.46, run3 f216 0.39)
+    → 손목 신뢰도 ≥ 0.7이고 몸통 사각형(어깨·엉덩이) 밖으로 몸통 길이의 0.45배 이상 나와 있으면 길이비 0.3까지 허용.
+    (7런에서 완화로 바뀌는 28개 중 등 위에 찍힌 3개는 0.16~0.34, 장갑이 보이는 25개는 0.55 이상이었다)"""
     el, sh = i - 2, i - 4
     if c[i] < 0.5 or c[el] < 0.5:
         return False
     up = np.linalg.norm(k[el] - k[sh])
     fo = np.linalg.norm(k[i] - k[el])
-    return up > 1 and 0.5 <= fo / up <= 1.5
+    if up <= 1:
+        return False
+    r = fo / up
+    if 0.5 <= r <= 1.5:
+        return True
+    if not (WRIST_RELAX and c[i] >= 0.7 and 0.3 <= r < 0.5) or min(c[[5, 6, 11, 12]]) < 0.5:
+        return False
+    torso = np.linalg.norm((k[5] + k[6]) / 2 - (k[11] + k[12]) / 2)
+    out = -cv2.pointPolygonTest(k[[5, 6, 12, 11]].astype(np.float32), (float(k[i][0]), float(k[i][1])), True)
+    return torso > 1 and out >= 0.45 * torso
 
 
 def contact_kpts(kp, size):
@@ -861,18 +955,42 @@ def axis_error(p, M, I):
     return min(d, 180 - d)
 
 
-def run_one(r, out, pose_m, pool, K):
+def wrist_flips(kp):
+    """--wrist-relax로 판정이 바뀌는 손목 (진단용). [(i, conf, 길이비)]"""
+    global WRIST_RELAX
+    if kp is None:
+        return []
+    k, c = kp
+    keep, out = WRIST_RELAX, []
+    for i in (9, 10):
+        WRIST_RELAX = False
+        a = wrist_ok(k, c, i)
+        WRIST_RELAX = True
+        b = wrist_ok(k, c, i)
+        if a != b:
+            up = np.linalg.norm(k[i - 2] - k[i - 4])
+            out.append((i, round(float(c[i]), 2), round(float(np.linalg.norm(k[i] - k[i - 2]) / max(up, 1e-6)), 2)))
+    WRIST_RELAX = keep
+    return out
+
+
+def run_one(r, out, pose_m, pool, K, dst=None, hints=None):
+    """out: 입력(crops·masks·run<N>.csv)과 기본 출력 폴더. dst: 출력만 따로 둘 폴더(변형 비교용, 없으면 out).
+    hints: {frame: 힌트 dict} (load_hints의 이 런 부분)."""
     import analyze_lean as AL
     t0 = time.time()
     run = r["run"]
+    dst = dst or out
+    hints = hints or {}
     csv_path = out / f"run{run}.csv"
     rows = list(csv.DictReader(open(csv_path, encoding="utf-8")))
-    (out / "overlay_fit").mkdir(exist_ok=True)
+    (dst / "overlay_fit").mkdir(parents=True, exist_ok=True)
     for x in rows:
         for k in ("fit_yaw", "fit_lean", "fit_pitch", "fit_iou", "fit_lean_s", "fit_back", "fit_lean_unc", "fit_sign_ambig",
-                  "fit_scale", "fit_occl", "fit_axis_err", "fit_lowconf", "fit_ncomp"):
+                  "fit_scale", "fit_occl", "fit_axis_err", "fit_lowconf", "fit_ncomp", "fit_hint"):
             x[k] = ""
     jobs, meta, kps, torsos = [], [], [], []
+    flips = []
     occl = load_occlusion(out, run)
     for x in rows:
         name = f"run{run}_f{int(x['frame']):04d}"
@@ -900,6 +1018,19 @@ def run_one(r, out, pose_m, pool, K):
         # yaw +11 / lean −3으로 뒤집혔다(절제 실험: 이 항 하나만 끄면 fix2와 같은 +24/+16). occl_wheel=0이 실제로는
         # 둔덕 립에 걸린 프레임도 있어 믿기 어려움 → 0이면 바닥 정보 없음으로 취급.
         x["fit_occl"] = "" if oc is None else oc
+        h = hints.get(int(x["frame"]))
+        if h is not None:
+            h = dict(h)
+            hand_c = 0.0   # 보이는 쪽(화면 오른쪽/왼쪽) 손목의 신뢰도 → 위치 σ
+            if kp is not None and h.get("side") in ("left", "right"):
+                wi = max((9, 10), key=lambda i: kp[0][i][0] * (1 if h["side"] == "right" else -1))
+                hand_c = float(kp[1][wi])
+            seen = hand_c >= HINT_HAND_CONF
+            h["sig_pos"] = HINT_SIG_POS if seen else HINT_SIG_POS_HIDDEN
+            kpl.append((h, 0.0, 1.0, 8))
+            x["fit_hint"] = 1 if seen else 2
+        for i, cf, ratio in wrist_flips(kp):
+            flips.append(f"f{int(x['frame'])} {'L' if i == 9 else 'R'}손목(신뢰도 {cf}, 길이비 {ratio})")
         jobs.append((M, I, K, kpl))
         kps.append(kp)
         torsos.append(torso_len(kp, GRID))
@@ -932,7 +1063,9 @@ def run_one(r, out, pose_m, pool, K):
         x["fit_axis_err"] = "" if ae != ae else round(ae, 1)
         rear = abs(math.degrees(wrap(p[0]))) < 35
         # 저신뢰: IoU 낮음 / 뒷모습에서 주축 불일치 / 손실이 거의 같은 해끼리 lean이 15° 넘게 다름(관측 불가)
-        low = (v < 0.45) or (rear and (v < 0.55 or (ae == ae and ae > AXIS_TOL) or unc > LEAN_UNC_TOL))
+        # 힌트 프레임은 lean을 사람이 그린 바 각도가 정하므로 주축·lean_unc 기준은 보지 않는다 (IoU 기준은 그대로).
+        hinted = x.get("fit_hint") in (1, 2)
+        low = (v < 0.45) or (rear and (v < 0.55 or (not hinted and ((ae == ae and ae > AXIS_TOL) or unc > LEAN_UNC_TOL))))
         x["fit_lowconf"] = int(low)
         yaw, lean, pitch = (math.degrees(wrap(a)) for a in p[:3])
         x["fit_yaw"], x["fit_lean"], x["fit_pitch"] = round(yaw, 1), round(lean, 1), round(pitch, 1)
@@ -950,26 +1083,34 @@ def run_one(r, out, pose_m, pool, K):
         msk = cv2.imread(str(out / "masks" / f"{name}.png"), 0) > 127
         vis[msk] = (vis[msk] * 0.6 + np.array([255, 0, 200]) * 0.4).astype(np.uint8)
         draw_overlay(q, vis, contact_kpts(kp, AL.CROP))
+        h = hints.get(int(x["frame"]))
+        if h is not None:  # 그린 핸들바 선(주황)
+            for (ax, ay), (bx, by) in h["segs_crop"]:
+                cv2.line(vis, (int(ax), int(ay)), (int(bx), int(by)), (0, 150, 255), 2, cv2.LINE_AA)
         cv2.putText(vis, f"lean {lean:+.0f}  yaw {yaw:+.0f}  pitch {pitch:+.0f}  IoU {v:.2f}",
                     (8, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2, cv2.LINE_AA)
-        txt = f"back {b:+.2f}" + ("  LOW-CONF" if x["fit_lowconf"] else "")
+        txt = f"back {b:+.2f}" + ("  LOW-CONF" if x["fit_lowconf"] else "") + ("  HINT" if h is not None else "")
         if x.get("body_lean"):
             txt = f"torso(2D) {float(x['body_lean']):+.0f}  " + txt
         cv2.putText(vis, txt, (8, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (60, 220, 60), 2, cv2.LINE_AA)
-        cv2.imwrite(str(out / "overlay_fit" / f"{name}.jpg"), vis, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        cv2.imwrite(str(dst / "overlay_fit" / f"{name}.jpg"), vis, [cv2.IMWRITE_JPEG_QUALITY, 85])
     keys = list(rows[0].keys())
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+    with open(dst / f"run{run}.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=keys)
         w.writeheader()
         w.writerows(rows)
     dt = time.time() - t0
     st = run_stats(rows)
     nlow = sum(1 for x in rows if x.get("fit_lowconf") == 1)
+    if hints:
+        print(f"  run {run}: 핸들바 선 힌트 {len(hints)}프레임 (f{', f'.join(str(f) for f in sorted(hints))})")
+    if flips:
+        print(f"  run {run}: 손목 판정 바뀜(--wrist-relax 기준) {len(flips)}개{' [적용]' if WRIST_RELAX else ' [미적용]'}: " + "; ".join(flips))
     print(f"  run {run}: 저신뢰 {nlow}프레임 (뒷모습에서 주축 불일치·IoU 낮음 — 분리각 통계에서 제외 권장)")
     print(f"  run {run}: {len(sel)}프레임, {dt:.0f}s (포즈 {t1 - t0:.0f}s, 맞춤 {t2 - t1:.0f}s) | IoU 중앙값 {st['iou']:.2f} | "
           f"yaw급변(>90°) {st['yawflip']} (>30° {st['yawjump']}) | lean급변(>25°) {st['leanjump']} | lean {st['lmin']:+.0f}..{st['lmax']:+.0f} | "
           f"뒷모습(vr>0.75) lean 중앙값 {st['rear']:+.0f}")
-    save_montage(out, run)
+    save_montage(dst, run)
     return dict(run=run, time=dt, **st)
 
 
@@ -1056,10 +1197,18 @@ def main():
     ap.add_argument("--topk", type=int, default=6, help="프레임당 다듬을 후보 수 (거울쌍 제외)")
     ap.add_argument("--turn", choices=["left", "right", "none", "auto"], default="auto",
                     help="회전 방향 사전 (auto: feature 이름의 left/right)")
+    ap.add_argument("--no-hints", action="store_true", help="sessions/<세션>/bar_hints.json(그린 핸들바 선)을 쓰지 않음")
+    ap.add_argument("--hint-exclude", nargs="*", default=[], help="뺄 힌트 run:frame (한 장 빼기 검증), 예: 4:216")
+    ap.add_argument("--wrist-relax", action="store_true", help="신뢰도 ≥0.7 손목은 팔뚝/위팔 비 0.3까지 허용 (뒷모습 팔뚝 단축)")
+    ap.add_argument("--out-dir", default=None, help="CSV·오버레이를 이 폴더에 씀 (기본: 입력 폴더에 덮어씀)")
     a = ap.parse_args()
     seg = Path(a.segments)
     cfg = json.loads(seg.read_text(encoding="utf-8"))
-    global TURN
+    global TURN, WRIST_RELAX
+    WRIST_RELAX = a.wrist_relax
+    excl = {tuple(int(v) for v in s.split(":")) for s in a.hint_exclude}
+    hints = {} if a.no_hints else load_hints(seg, excl)
+    print(f"핸들바 선 힌트: {len(hints)}프레임" + (f" (제외 {sorted(excl)})" if excl else "") + f" | 손목 완화: {'켬' if WRIST_RELAX else '끔'}")
     tn = a.turn
     if tn == "auto":
         f = cfg.get("feature", "")
@@ -1068,7 +1217,9 @@ def main():
     print(f"회전 방향 사전: {tn}")
     import paths as PATHS
     out = PATHS.feat_dir(seg, cfg, "lean")
-    pose_m = YOLO(str(Path(__file__).resolve().parent.parent / "models" / "yolo11x-pose.pt"))
+    dst = Path(a.out_dir) if a.out_dir else out
+    dst.mkdir(parents=True, exist_ok=True)
+    pose_m = YOLO(str(PATHS.MODELS / "yolo11x-pose.pt"))
     stats = []
     bike = bike_config(cfg.get("bike"))
     set_bike(bike)
@@ -1078,8 +1229,9 @@ def main():
         for r in cfg["runs"]:
             if a.runs and r["run"] not in a.runs:
                 continue
-            stats.append(run_one(r, out, pose_m, pool, a.topk))
-    plot_all(out, [r["run"] for r in cfg["runs"]])
+            rh = {f: h for (rn, f), h in hints.items() if rn == r["run"]}
+            stats.append(run_one(r, out, pose_m, pool, a.topk, dst, rh))
+    plot_all(dst, [r["run"] for r in cfg["runs"]])
     print("\nrun | 프레임 | 시간s | IoU중앙 | yaw>90 | yaw>30 | lean>25 | lean부호변화 | lean 범위 | 뒷모습 lean 중앙/최대")
     for s in stats:
         print(f"{s['run']:>3} | {s['n']:>4} | {s['time']:5.0f} | {s['iou']:.2f} | {s['yawflip']:>3} | {s['yawjump']:>3} | "
