@@ -749,6 +749,84 @@ def cmd_analyze(a):
                 montage(seg, cfg, r["run"], rows, extra, od / f"montage_run{r['run']}{suffix}.jpg")
 
 
+def cmd_diag(a):
+    """진단: (1) GVHMR 세계 궤적·카메라 기준 궤적이 진행 방향으로 쓸 만한가, (2) GVHMR 중력과 VO의 일관성,
+    (3) 시점에 따라 값이 끌려가는가(상관), (4) 실루엣 fit_yaw와 GVHMR 시점의 독립 비교,
+    (5) 회전 각도(골반 방향이 구간 시작부터 왼쪽으로 돈 양)를 맞춘 런 비교. 결과는 diag.txt와 turn_matched.csv."""
+    from scipy.signal import savgol_filter
+    lines, table = [], []
+    THETAS = [15, 30, 45, 60, 75, 90]
+    keys = ["torso_roll", "body_lean", "torso_pitch", "bike_lean_body", "separation_b3d", "hip_offset_mm", "fit_lean_s"]
+    for segp in ([a.ref] if a.ref else []) + [a.segments]:
+        seg = (ROOT / segp).resolve(); cfg = PATHS.load_cfg(seg); od = out_dir(seg, cfg)
+        for r in cfg["runs"]:
+            npz = od / f"gvhmr_run{r['run']}.npz"
+            csvp = od / f"run{r['run']}.csv"
+            if not npz.exists() or not csvp.exists():
+                continue
+            z = np.load(npz)
+            fr, fps = z["frames"], float(z["fps"])
+            Jg, Jc = z["joints_g"], z["joints_c"]
+            seg_m = (fr >= int(z["seg_f0"])) & (fr <= int(z["seg_f1"]))
+            Rc2w = np.stack([kabsch(Jc[i], Jg[i]) for i in range(len(fr))])
+            Rw2c = z["T_w2c"][:, :3, :3].astype(float)
+            up_c = np.einsum("lji,j->li", Rc2w, UP)
+            up_vo = np.einsum("lji,lj->li", Rw2c, up_c)
+            upm = unit(up_vo.mean(0))
+            spread = np.degrees(np.arccos(np.clip(up_vo @ upm, -1, 1)))
+            P = np.einsum("lji,lj->li", Rw2c, Jc[:, J_PELVIS])     # 카메라 기준 궤적(카메라 위치 고정 가정)
+            v = np.gradient(savgol_filter(P, 15, 2, axis=0), axis=0) * fps
+            vh = v - (v @ upm)[:, None] * upm
+            d_g = hproj(np.einsum("lij,lj->li", Rc2w, np.einsum("lij,lj->li", Rw2c, unit(vh))))
+            face = hproj(rodrigues(z["go_g"]) @ np.array([0, 0, 1.0]))
+            yc = signed_yaw(d_g, face)[seg_m]
+            disp = float(np.linalg.norm((Jg[-1, J_PELVIS] - Jg[0, J_PELVIS]) * [1, 0, 1]))
+            rows = read_csv(csvp)
+            old = {int(x["frame"]): x for x in lean_rows_of(seg, cfg, r["run"])}
+            g = lambda k, src="new": np.array([fnum((x if src == "new" else old.get(int(x["frame"]), {})).get(k))  # noqa: E731
+                                              if fnum((x if src == "new" else old.get(int(x["frame"]), {})).get(k)) is not None else np.nan
+                                              for x in rows])
+            vs, hip, roll, croll = g("cam_view_signed"), g("hip_offset_mm"), g("torso_roll"), g("cam_roll_deg")
+            fy, iou = g("fit_yaw", "old"), g("fit_iou", "old")
+            lowc = np.array([str(old.get(int(x["frame"]), {}).get("fit_lowconf", "0")).strip() in ("1", "1.0") for x in rows])
+            ok = np.isfinite(fy) & ~lowc
+            corr = lambda x, y: float(np.corrcoef(x[np.isfinite(x) & np.isfinite(y)], y[np.isfinite(x) & np.isfinite(y)])[0, 1])  # noqa: E731
+            name = "coach" if r["run"] == 0 else f"run{r['run']}"
+            lines.append(
+                f"{name}: GVHMR world pelvis horiz. displacement over window {disp:.2f} m | VO-gravity spread med {np.median(spread[seg_m]):.1f} "
+                f"max {spread[seg_m].max():.1f} deg | camera-anchored heading - facing: med {np.median(yc):+.0f}, IQR "
+                f"{np.subtract(*np.percentile(yc, [75, 25])):.0f} deg | corr(hip_offset, view_signed) {corr(hip, vs):+.2f} | "
+                f"corr(cam_roll, torso_roll) {corr(croll, roll):+.2f} | fit_yaw - view_signed (non-lowconf, n={ok.sum()}): "
+                f"med {np.nanmedian((fy - vs)[ok]):+.0f}, corr {corr(fy[ok], vs[ok]):+.2f}")
+            # 회전 각도 맞춤: 구간 첫 행부터 골반 방향이 왼쪽으로 돈 누적 yaw
+            idx = {int(f): i for i, f in enumerate(fr)}
+            si = np.array([idx[int(x["seq_frame"])] for x in rows])
+            hd = np.degrees(np.unwrap(np.arctan2(face[:, 0], face[:, 2])))
+            turn = hd[si] - hd[si[0]]
+            turn = np.maximum.accumulate(turn)   # 단조로 만들어 보간
+            vals = {k: g(k, "old" if k in ("body_lean", "fit_lean_s") else "new") for k in keys}
+            vals["fit_lean_s"] = np.where(lowc, np.nan, vals["fit_lean_s"])
+            for th in THETAS:
+                m = np.abs(turn - th) <= 5
+                row = dict(run=r["run"], turn_deg=th, n=int(m.sum()),
+                           progress=round(float(np.nanmedian(g("progress")[m])), 2) if m.any() else "",
+                           view_signed=round(float(np.nanmedian(vs[m])), 0) if m.any() else "")
+                for k in keys:
+                    x = vals[k][m]
+                    row[k] = round(float(np.nanmedian(x)), 1) if np.isfinite(x).any() else ""
+                table.append(row)
+    od = out_dir((ROOT / a.segments).resolve(), PATHS.load_cfg((ROOT / a.segments).resolve()))
+    (od / "diag.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with open(od / "turn_matched.csv", "w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, ["run", "turn_deg", "n", "progress", "view_signed"] + keys); w.writeheader(); w.writerows(table)
+    print("\n".join(lines))
+    for k in ("torso_roll", "body_lean", "bike_lean_body", "separation_b3d", "hip_offset_mm", "fit_lean_s"):
+        print(f"\n{k} at turn angle (deg) " + " ".join(f"{t:>6}" for t in THETAS))
+        for run in sorted({x["run"] for x in table}):
+            vals_ = [next((x[k] for x in table if x["run"] == run and x["turn_deg"] == t), "") for t in THETAS]
+            print(f"  {'coach' if run == 0 else 'run' + str(run):>6}             " + " ".join(f"{v:>6}" for v in vals_))
+
+
 def cmd_prepcheck(a):
     """infer --stage prep 결과(라이더 박스·ViTPose·다른 사람 트랙)를 구간 프레임 위에 그려 확인한다.
     GVHMR_HOME은 Windows에서 보이는 경로(예: \\\\wsl.localhost\\Ubuntu\\home\\<user>\\gvhmr\\GVHMR)."""
@@ -851,10 +929,10 @@ def cmd_board(a):
                          limb=g(new, "limb_conf"), hip=g(new, "hip_offset_mm"), sens=g(new, "bike_sens15"),
                          rsens=g(new, "roll_sens15"))
     n = len(data)
-    H_in = 2.6 * n + 8.5
+    H_in = 2.6 * n + 12.5
     fig = plt.figure(figsize=(21, H_in), facecolor=SURF)
     top = 1 - 1.25 / H_in
-    gs = fig.add_gridspec(n + 3, 2, width_ratios=[2.0, 1], height_ratios=[1] * n + [0.15, 1.9, 1.5], hspace=0.5,
+    gs = fig.add_gridspec(n + 4, 2, width_ratios=[2.0, 1], height_ratios=[1] * n + [0.15, 1.9, 1.9, 2.0], hspace=0.5,
                           wspace=0.16, top=top, bottom=0.01, left=0.06, right=0.99)
     fig.text(0.01, 1 - 0.3 / H_in, "좌회전 뱅크 · GVHMR 3D 각도 vs 기존 2D/실루엣 값", fontsize=22, color=INK, va="top")
     fig.text(0.01, 1 - 0.75 / H_in, "실선 = GVHMR 3D(측정값, 중력 기준), 점선 = 기존 값(2D body_lean, 실루엣 fit_lean_s, LOW-CONF 제외). "
@@ -951,7 +1029,34 @@ def cmd_board(a):
                   "기존 분리각 = separation_board.py 선택 기준(실루엣-2D, lean_snapshot). "
                   "흔들림 = 연속 프레임 차의 중앙값(매끄러움은 모델 사전 영향이지 정확도가 아님)",
                   fontsize=11.5, color=INK2, loc="left")
-    axn = fig.add_subplot(gs[n + 2, :]); axn.axis("off")
+    # 표 2: 회전 각도 맞춤 (diag가 만든 turn_matched.csv)
+    tmp = out_dir(seg, cfg) / "turn_matched.csv"
+    if tmp.exists():
+        tm = read_csv(tmp)
+        TH = ["15", "30", "45", "60"]
+        cols2 = [""] + [f"{t}° 회전\n{lab}" for t in TH for lab in ("시점", "3D 롤", "3D 자전거", "분리각")]
+        cell2 = []
+        for d in data:
+            row = [d["name"]]
+            for t in TH:
+                x = next((q for q in tm if int(q["run"]) == d["run"] and q["turn_deg"] == t), None)
+                fv = lambda k: "-" if x is None or fnum(x.get(k)) is None else f"{fnum(x[k]):+.0f}"  # noqa: E731
+                row += [fv("view_signed"), fv("torso_roll"), fv("bike_lean_body"), fv("separation_b3d")]
+            cell2.append(row)
+        axm = fig.add_subplot(gs[n + 2, :]); axm.axis("off")
+        tb2 = axm.table(cellText=cell2, colLabels=cols2, cellLoc="center",
+                        colWidths=[0.06] + [0.94 / 16] * 16, bbox=[0, 0, 1, 0.9])
+        tb2.auto_set_font_size(False); tb2.set_fontsize(11)
+        for (i, j), c in tb2.get_celld().items():
+            c.set_edgecolor(GRID)
+            if i == 0:
+                c.set_text_props(color=INK, weight="bold"); c.set_facecolor("#f0efec")
+            elif j >= 1 and ((j - 1) // 4) % 2 == 0:
+                c.set_facecolor("#f6f5f2")
+        axm.set_title("회전 단계를 맞춘 비교: 골반 방향이 구간 시작부터 왼쪽으로 15·30·45·60° 돈 시점(±5°)의 중앙값(°). "
+                      "내 런은 15~45°에서 시점이 ±25° 안(뒷모습 쪽). 코치님은 촬영 자리가 달라 같은 회전에서도 시점이 다름",
+                      fontsize=11.5, color=INK2, loc="left")
+    axn = fig.add_subplot(gs[n + 3, :]); axn.axis("off")
     note = a.note or ""
     if note and Path(note).exists():
         note = Path(note).read_text(encoding="utf-8")
@@ -980,9 +1085,10 @@ def main():
     p = sub.add_parser("board"); p.add_argument("segments"); p.add_argument("--ref"); p.add_argument("--runs", type=int, nargs="*")
     p.add_argument("--out"); p.add_argument("--note", help="보드 아래 판단 문장(문자열 또는 텍스트 파일 경로)")
     p = sub.add_parser("prepcheck"); p.add_argument("segments"); p.add_argument("--runs", type=int, nargs="*")
+    p = sub.add_parser("diag"); p.add_argument("segments"); p.add_argument("--ref")
     sub.add_parser("selftest")
     a = ap.parse_args()
-    {"infer": cmd_infer, "analyze": cmd_analyze, "board": cmd_board, "prepcheck": cmd_prepcheck,
+    {"infer": cmd_infer, "analyze": cmd_analyze, "board": cmd_board, "prepcheck": cmd_prepcheck, "diag": cmd_diag,
      "selftest": lambda _: selftest()}[a.cmd](a)
 
 
