@@ -19,7 +19,7 @@ MTB 강습 영상에서 내 자세·자전거·뱅크 라인을 인식해 회고
 
 - 영상 7개(각 10~12초, 1080p 30fps, 코치님 핸드헬드 패닝). 모두 같은 라인을 한 번씩 탄 것. 전부 본인. `reference/2026-11-21/2026-11-21_run<N>.mp4`.
 - 제외: 세로 클립(자세 설명 장면, `2026-11-21_extra_posture-talk-vertical.mp4`), 46초 따라가기 영상(파일 없음).
-- 코치님 피드백(ASD-STE100 방식으로 바꿔 씀, 원문은 `sessions/2026-11-21/feedback.local.md`, git 제외): "In almost all videos, the body position and the line in the left turn are not stable. Do a separate exercise for this turn only, to make it better."
+- 코치님 피드백(ASD-STE100 스타일 한국어로 바꿔 씀, 원문은 `sessions/2026-11-21/feedback.local.md`, git 제외): "거의 모든 영상에서 좌회전 자세가 안정적이지 않다. 좌회전 라인도 안정적이지 않다. 좌회전만 따로 연습한다. 이 연습으로 좌회전의 완성도를 높인다."
 - 2026-11-22 코치님 모범 영상 수신: `reference/reference-coach/coach-demo_received-2026-11-22.mp4` (12.7초, 1080p30, 여름 촬영, 같은 위치).
   좌회전 뱅크 대략 6.5~8.5초. 내 영상보다 라이더가 작게 찍힘. 점프를 크게 띄움.
 
@@ -36,7 +36,7 @@ MTB 강습 영상에서 내 자세·자전거·뱅크 라인을 인식해 회고
   - 경로 규칙은 `tools/paths.py` 하나로 모으고 모든 도구가 이를 씀. `video_dir`는 저장소 기준 상대경로.
 - 공개 저장소 규칙(AGENTS.md):
   - 영상·이미지 등 라이더·코치님 모습이 담긴 파일은 커밋하지 않음.
-  - 코치님 메시지 원문은 ASD-STE100 방식 영어로 바꿔 쓰고 원문은 `*.local.*`(git 제외)에 둠. 사용자 결정.
+  - 코치님 메시지 원문은 ASD-STE100 스타일(짧은 문장, 한 문장에 한 내용, 능동형)의 한국어로 바꿔 쓰고 원문은 `*.local.*`(git 제외)에 둠. 사용자 결정. 처음에 영어로 썼다가 사용자가 "한국어로, 스타일만 STE"로 정정.
   - README에 예시 이미지 넣지 않음. 사용자 결정.
 - 장소 표기를 "수리산 볼보 파크"로 정정(사용자).
 - 주별 회고는 비공개 second-brain 볼트(`20-Areas/mtb/`)에 씀.
@@ -71,7 +71,8 @@ MTB 강습 영상에서 내 자세·자전거·뱅크 라인을 인식해 회고
   - 일관된 것은 "Run 5·7이 Run 1~4보다 자전거를 더 눕힘"뿐.
   - 실루엣만으로는 뒤에서 본 자전거 기울기를 정하기 어려움. 바퀴가 가장자리로 보이고, 다리와 흙 둔덕에 가림.
   - 더 고치기보다 측정 방법을 바꾸는 게 맞음: 옆·높은 시점 촬영(docs/capture-requests.md), GVHMR 같은 3D 몸 자세, 손 사이 선 기울기 같은 직접 단서.
-- 다음: 분리각은 순서만 참고. 인사이트는 타이밍·라인 쪽을 우선.
+- 사용자 확인: 전반적으로는 나아졌지만, 코디네이터가 짚은 프레임(run4 f212·f216, LOW-CONF로 빠진 정후면 프레임)은 오히려 나빠졌다는 데 동의.
+- 다음: 분리각은 순서만 참고. 인사이트는 타이밍·라인 쪽을 우선. run4 f212 회귀(fix2에서는 맞았음)와 f216 앞바퀴 조각 무시는 열린 과제.
 
 ### 2026-11-22 · 코치님 3D 맞추기 + 분리각 보드에 코치님 추가 (코디네이터)
 - `sessions/reference-coach/segments.json`에 `"bike": {"preset": "generic"}`을 넣음(기종 미확인). 실행: `uv run python tools/bike_fit.py sessions/reference-coach/segments.json --runs 0`.
