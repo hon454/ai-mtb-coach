@@ -27,6 +27,7 @@ ai-mtb-coach: MTB 강습 영상(코치님 카톡 영상 + 텍스트 피드백)�
   - `insight_board.py` 인사이트 장면 보드(spec JSON)
   - `separation_board.py` 자전거 vs 상체 기울기 보드(`--ref`로 코치 추가)
   - `leanout_board.py` 린아웃 측정 시도(현재 근사가 부정확, LOG 참고)
+  - `body3d_gvhmr.py` GVHMR 중력 기준 3D 몸 자세(상체 롤·피치, 손·발 자전거 평면, 엉덩이 오프셋). infer는 WSL의 `$GVHMR_HOME` 환경에서 돌림
 - `sessions/<세션>/` 강습별 설정(git 추적): `segments.json`(구간·자전거), `insights/*.json`(보드 spec), `berm_prompts.json`·`berm_board_captions.json`(뱅크 수동 프롬프트·캡션)
 - `reference/<세션>/` 원본 영상(git 제외). 파일명 `<세션>_run<N>.mp4` 등
 - `outputs/<세션>/` 모든 산출물(git 제외): `<feature>_pose`, `_lean`, `_berm`, `insights/`
