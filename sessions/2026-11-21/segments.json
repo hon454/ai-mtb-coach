@@ -1,0 +1,25 @@
+{
+  "session": "2026-11-21",
+  "trail": "수리산 볼보 파크",
+  "video_dir": "reference/2026-11-21",
+  "feedback": "In almost all videos, the body position and the line in the left turn are not stable. Do a separate exercise for this turn only, to make it better.",
+  "feedback_note": "Coach feedback rewritten in ASD-STE100 style. The original message is in feedback.local.md (not in git).",
+  "feature": "left_bank",
+  "feature_note": "점프 착지 직후 ~ 좌회전 뱅크 탈출(갭점프 진입 전 평지). 뱅크 안에 약한 롤러 2개.",
+  "bike": {"model": "Cannondale Moterra SL 1 (2025), L, mullet", "preset": "moterra_sl_l",
+           "wheel_radius_front": 375, "wheel_radius_rear": 352, "bb_height": 335, "tire_width": 62,
+           "chainstay": 453, "wheelbase": 1283,
+           "reach": 470, "stack": 648, "head_angle": 62.5, "head_tube": 135, "seat_angle": 77, "seat_tube": 520,
+           "down_tube_width": 95, "bar_width": 780, "bar_rise": 30, "bar_backsweep": 8, "bar_upsweep": 5,
+           "stem_length": 50, "stem_stack": 40, "crank": 165,
+           "note": "멀렛: 앞 29x2.5 DHF / 뒤 27.5x2.4 Dissector(반지름 584/2+60). BB 높이 335, 크랭크 165, 트래블 150/160 (판매처 스펙표). 지오메트리 bikeinsights/singletrackworld, 콕핏 Cannondale 공식 스펙. stem_length·stem_stack은 스펙에 없어 가정값"},
+  "runs": [
+    {"run": 1, "file": "2026-11-21_run1.mp4", "start": 5.25, "end": 7.25},
+    {"run": 2, "file": "2026-11-21_run2.mp4", "start": 5.75, "end": 7.75},
+    {"run": 3, "file": "2026-11-21_run3.mp4", "start": 6.25, "end": 8.00},
+    {"run": 4, "file": "2026-11-21_run4.mp4", "start": 6.25, "end": 8.00},
+    {"run": 5, "file": "2026-11-21_run5.mp4", "start": 5.50, "end": 7.75},
+    {"run": 6, "file": "2026-11-21_run6.mp4", "start": 7.25, "end": 9.90},
+    {"run": 7, "file": "2026-11-21_run7.mp4", "start": 5.00, "end": 7.00}
+  ]
+}

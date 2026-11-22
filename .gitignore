@@ -1,0 +1,23 @@
+# Python / uv
+.venv/
+__pycache__/
+*.pyc
+
+# 모델 가중치 (Ultralytics가 처음 실행 때 내려받음)
+models/
+*.pt
+
+# 원본 영상 (라이더·코치 개인 영상) — reference/<세션>/
+reference/
+
+# 모든 산출물 (크롭·마스크·오버레이·보드·영상·CSV) — 도구를 다시 돌리면 생성됨
+outputs/
+
+# 로컬 전용 메모 (예: 코치 피드백 원문)
+*.local.*
+
+# 혹시 남은 미디어
+*.mp4
+*.mov
+sessions/**/*.jpg
+sessions/**/*.png
