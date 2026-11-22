@@ -12,7 +12,8 @@ analyze_lean.py 다음에 실행:
   각각 앞·뒤로 추적하고, 프레임마다 앵커들끼리 가장 많이 겹치는 마스크(medoid)를 고른다
   (포즈가 믿을 만하면 몸통·머리·접지선 아래 침범을 감점). 작은 조각·납작한 바닥 줄무늬는 지운다.
 결과: run<N>.csv 에 bike_lean_sam, separation_sam 열 추가, masks/ 와 overlay_sam/ 에 저장.
---deshadow: 있는 마스크에서 땅에 진 바퀴 그림자를 뺀다(아래 '그림자 제거' 주석). SAM2를 다시 돌렸으면 그 뒤에 다시 실행.
+--deshadow: masks/(SAM2 원본)에서 땅에 진 바퀴 그림자를 뺀 마스크를 masks_deshadow/에 만든다(아래 '그림자 제거' 주석).
+    masks/는 바꾸지 않는다. bike_fit은 기본으로 masks/를 쓴다(--masks deshadow로 바꿈). SAM2를 다시 돌렸으면 그 뒤에 다시 실행.
 """
 import argparse
 import csv
@@ -349,7 +350,9 @@ def run_one(r, out, seg_m, pose_m, sam_path, kp_prompt_flag=False, anchors=None,
 #   - 테두리 비율: 덩어리 둘레 중 마스크 바깥과 맞닿은 비율 ≥ SH_EDGE (바퀴 안으로 비친 땅은 타이어에 둘러싸여 낮다)
 #   - 밝은 그림자 비율 ≥ SH_BRIGHT (L<SH_LDARK인 짙은 화소는 밝은 그림자 곁 SH_NEAR px 안에서만 덩어리에 붙는다)
 #   - 땅 높이 아래 비율 ≥ SH_BELOW. 땅 높이 = 낮은 발목 y + 0.15 m. 흙 묻은 타이어 띠(뒷모습)는 대부분 이보다 위에 있다.
-# 발목이 안 잡히면 그 프레임은 건드리지 않는다. 원본은 masks_raw/에 두고 늘 거기서 다시 만든다.
+# 발목이 안 잡히면 그 프레임은 건드리지 않는다. 원본 masks/는 그대로 두고 결과는 masks_deshadow/에 쓴다.
+# bike_fit에는 기본으로 쓰지 않는다: 그림자를 빼면 마스크는 맞아지지만 그린 핸들바 선과의 차이가 커졌다
+# (41프레임 7.0° → 9.5°, LOG 2026-11-23).
 SH_EDGE, SH_BRIGHT, SH_BELOW, SH_NEAR, SH_LDARK = 0.40, 0.35, 0.5, 8, 28
 
 
@@ -422,10 +425,10 @@ def deshadow_mask(img, m, ground_y):
 
 
 def deshadow_run(r, out, pose_m):
-    """이미 만든 masks/run<N>_f*.png에서 그림자를 뺀다. 원본은 masks_raw/에 한 번만 복사해 두고 늘 거기서 다시 만든다."""
+    """masks/run<N>_f*.png(SAM2 원본)에서 그림자를 뺀 마스크를 masks_deshadow/에 쓴다. 기록·확인 이미지도 거기에 둔다."""
     run = r["run"]
-    raw, dst = out / "masks_raw", out / "masks"
-    raw.mkdir(exist_ok=True)
+    raw, dst = out / "masks", out / "masks_deshadow"
+    dst.mkdir(exist_ok=True)
     rows = list(csv.DictReader(open(out / f"run{run}.csv", encoding="utf-8")))
     sc = [float(x["fit_scale"]) * 4 for x in rows if x.get("fit_scale")]   # px/m @768 (bike_fit 결과가 있으면)
     s_run = float(np.median(sc)) if sc else None
@@ -434,9 +437,7 @@ def deshadow_run(r, out, pose_m):
         name = f"run{run}_f{int(x['frame']):04d}"
         mp, rp = dst / f"{name}.png", raw / f"{name}.png"
         if not rp.exists():
-            if not mp.exists():
-                continue
-            rp.write_bytes(mp.read_bytes())
+            continue
         m = cv2.imread(str(rp), 0) > 127
         img = cv2.imread(str(out / "crops" / f"{name}.jpg"))
         gy = None
@@ -453,7 +454,7 @@ def deshadow_run(r, out, pose_m):
         log[name] = round(float(frac), 3)
         if frac > 0.02:
             changed.append((name, img, m, km, frac))
-    (raw / f"deshadow_run{run}.json").write_text(json.dumps(log, indent=0), encoding="utf-8")
+    (dst / f"deshadow_run{run}.json").write_text(json.dumps(log, indent=0), encoding="utf-8")
     if changed:   # 확인용: 지운 곳 빨강, 남은 마스크 하늘색
         tiles = []
         for name, img, m, km, frac in changed[:40]:
@@ -466,7 +467,7 @@ def deshadow_run(r, out, pose_m):
             tiles.append(cv2.resize(v, (320, 320)))
         while len(tiles) % 8:
             tiles.append(np.zeros_like(tiles[0]))
-        cv2.imwrite(str(raw / f"deshadow_check_run{run}.jpg"),
+        cv2.imwrite(str(dst / f"deshadow_check_run{run}.jpg"),
                     np.vstack([np.hstack(tiles[i:i + 8]) for i in range(0, len(tiles), 8)]))
     v = np.array(list(log.values()) or [0])
     print(f"  run {run}: 그림자 제거 {len(log)}프레임 중 {int((v > 0.02).sum())}프레임 바뀜 "
@@ -481,7 +482,7 @@ def main():
     ap.add_argument("--montage", help="실행한 런의 마스크 몽타주(12장) 저장 경로. 여러 런이면 _run<N> 붙임")
     ap.add_argument("--kp-debug", action="store_true", help="앵커별 추적 결과를 _kp_debug/에 저장")
     ap.add_argument("--kp-anchors", type=int, nargs="*", help="키포인트 앵커 프레임 번호 직접 지정")
-    ap.add_argument("--deshadow", action="store_true", help="SAM2를 다시 돌리지 않고, 있는 마스크에서 땅 그림자만 뺌(원본은 masks_raw/)")
+    ap.add_argument("--deshadow", action="store_true", help="SAM2를 다시 돌리지 않고, masks/에서 땅 그림자를 뺀 마스크를 masks_deshadow/에 만듦")
     a = ap.parse_args()
     seg = Path(a.segments)
     cfg = json.loads(seg.read_text(encoding="utf-8"))

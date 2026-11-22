@@ -11,12 +11,14 @@
 사용법 (analyze_lean.py → bike_sam2.py 다음):
     uv run python tools/bike_fit.py sessions/2026-11-21/segments.json [--runs 1] [--workers 24]
     uv run python tools/bike_fit.py sessions/reference-coach/segments.json --runs 0
-    옵션: --no-hints (그린 핸들바 선 끄기), --hint-exclude 4:216 (한 장 빼기 검증), --wrist-relax (뒷모습 손목 완화),
+    옵션: --masks deshadow (그림자 뺀 마스크, 기본은 masks/ 원본), --hints (그린 핸들바 선 켜기, 기본은 끔), --hint-exclude 4:216 (한 장 빼기 검증), --wrist-relax (뒷모습 손목 완화),
           --out-dir DIR (CSV·오버레이를 따로 씀, 변형 비교용)
 
-핸들바 선 힌트: sessions/<세션>/bar_hints.json(사용자가 보드에 그린 선, 사람 판단)이 있으면 그 프레임에만
+핸들바 선 힌트(--hints, 기본은 끔): sessions/<세션>/bar_hints.json(사용자가 보드에 그린 선, 사람 판단)의 프레임에만
     그립-그립 각도 사전 + 보이는 쪽 그립의 선까지 거리 항을 건다 (W_HINT_ANG/POS 주석). 뒷모습에서 바 각도는
     yaw에 거의 무관하게 lean을 직접 보여 주므로, 실루엣만으로 수렴하지 않는 프레임을 사람이 고정하는 용도.
+    기본으로 끄는 이유: 힌트는 그린 프레임과 앞뒤 2~3프레임만 바꾸고(그리지 않은 프레임 오차는 그대로), 켜면 그린 선을
+    bike_fit 채점 기준으로 쓸 수 없다(2026-11-23 결정, LOG).
 
 좌표: 자전거 X=앞, Y=위, Z=라이더 왼쪽. 원점=BB. 단위 mm.
 lean +: 라이더 왼쪽으로 기움 (카메라 수평 가정, 중력 기준).
@@ -381,6 +383,7 @@ W_COMP = 0.0
 #   손실에 들어가므로 후보 점수·Viterbi 데이터항에도 반영되고, 연속성 항이 이웃 프레임을 끌어당긴다.
 W_HINT_ANG, W_HINT_POS = 0.03, 0.03
 HINT_SIG_POS = 10.0 * GRID / 768          # px@GRID, 보이는 손
+MASK_DIR = "masks"   # main()의 --masks로 바뀜 (masks_deshadow = 그림자 뺀 마스크)
 HINT_SIG_POS_HIDDEN = 10.0 * GRID / 768   # 손이 숨은 프레임. 25px로 느슨하게 하면 힌트 이웃 프레임이 나빠졌다
                                           # (힌트로 안 쓴 그림 25프레임 채점: 25px 7.3°, 10px 6.2°, 힌트 없음 6.5°)
 HINT_HAND_CONF = 0.6
@@ -994,7 +997,7 @@ def run_one(r, out, pose_m, pool, K, dst=None, hints=None):
     occl = load_occlusion(out, run)
     for x in rows:
         name = f"run{run}_f{int(x['frame']):04d}"
-        mp = out / "masks" / f"{name}.png"
+        mp = out / MASK_DIR / f"{name}.png"
         if not mp.exists():
             continue
         M = cv2.resize(cv2.imread(str(mp), 0), (GRID, GRID), interpolation=cv2.INTER_AREA) > 127
@@ -1080,7 +1083,7 @@ def run_one(r, out, pose_m, pool, K, dst=None, hints=None):
         q[5] /= scale
         crop = cv2.imread(str(out / "crops" / f"{name}.jpg"))
         vis = crop.copy()
-        msk = cv2.imread(str(out / "masks" / f"{name}.png"), 0) > 127
+        msk = cv2.imread(str(out / MASK_DIR / f"{name}.png"), 0) > 127
         vis[msk] = (vis[msk] * 0.6 + np.array([255, 0, 200]) * 0.4).astype(np.uint8)
         draw_overlay(q, vis, contact_kpts(kp, AL.CROP))
         h = hints.get(int(x["frame"]))
@@ -1197,17 +1200,21 @@ def main():
     ap.add_argument("--topk", type=int, default=6, help="프레임당 다듬을 후보 수 (거울쌍 제외)")
     ap.add_argument("--turn", choices=["left", "right", "none", "auto"], default="auto",
                     help="회전 방향 사전 (auto: feature 이름의 left/right)")
-    ap.add_argument("--no-hints", action="store_true", help="sessions/<세션>/bar_hints.json(그린 핸들바 선)을 쓰지 않음")
+    ap.add_argument("--masks", choices=["raw", "deshadow"], default="raw",
+                    help="raw: masks/(SAM2 원본, 기본). deshadow: masks_deshadow/(bike_sam2.py --deshadow, 땅 그림자 뺌)")
+    ap.add_argument("--hints", action="store_true", help="sessions/<세션>/bar_hints.json(그린 핸들바 선)을 힌트로 씀 (기본은 끔)")
+    ap.add_argument("--no-hints", action="store_true", help=argparse.SUPPRESS)   # 예전 옵션(이제 기본값). 받아만 둔다
     ap.add_argument("--hint-exclude", nargs="*", default=[], help="뺄 힌트 run:frame (한 장 빼기 검증), 예: 4:216")
     ap.add_argument("--wrist-relax", action="store_true", help="신뢰도 ≥0.7 손목은 팔뚝/위팔 비 0.3까지 허용 (뒷모습 팔뚝 단축)")
     ap.add_argument("--out-dir", default=None, help="CSV·오버레이를 이 폴더에 씀 (기본: 입력 폴더에 덮어씀)")
     a = ap.parse_args()
     seg = Path(a.segments)
     cfg = json.loads(seg.read_text(encoding="utf-8"))
-    global TURN, WRIST_RELAX
+    global TURN, WRIST_RELAX, MASK_DIR
+    MASK_DIR = "masks" if a.masks == "raw" else "masks_deshadow"
     WRIST_RELAX = a.wrist_relax
     excl = {tuple(int(v) for v in s.split(":")) for s in a.hint_exclude}
-    hints = {} if a.no_hints else load_hints(seg, excl)
+    hints = load_hints(seg, excl) if a.hints and not a.no_hints else {}
     print(f"핸들바 선 힌트: {len(hints)}프레임" + (f" (제외 {sorted(excl)})" if excl else "") + f" | 손목 완화: {'켬' if WRIST_RELAX else '끔'}")
     tn = a.turn
     if tn == "auto":

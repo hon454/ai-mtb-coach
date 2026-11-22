@@ -1,11 +1,16 @@
-"""뒷모습 구간의 자전거 기울기(3D 맞추기) vs 상체 기울기(2D 포즈) 보드.
+"""자전거 vs 상체 기울기 보드 (좌회전 뱅크).
 
-선택 기준: view_ratio > 0.75, |fit_yaw| < 25, fit_iou >= 0.55, fit_lowconf가 아닌 프레임 (bike_fit.py 결과 사용).
-분리각 = fit_lean_s - body_lean, 런별 중앙값. +면 자전거가 상체보다 더 누움.
-대표 프레임 = 분리각이 중앙값에 가장 가까운 프레임의 overlay_fit 이미지.
+--bike gvhmr (기본, 2026-11-23부터): GVHMR 3D(중력 기준) 값.
+    자전거 = grip_roll(왼손목–오른손목 선 = 핸들바 근사), 상체 = torso_roll(골반→목). 분리각 = grip_roll - torso_roll.
+    가로축은 골반 방향이 구간 시작부터 왼쪽으로 돈 각도(body3d_gvhmr.turn_of). 회전 15·30·45°(±5°) 구간의 프레임별 분리각 중앙값을 런끼리 비교.
+    고른 이유: 그린 핸들바 선 45프레임과 평균 3.3° 차이로 가장 가깝고, 마스크 변화에 흔들리지 않음(LOG 2026-11-23).
+    대표 사진 = 회전 30° 구간에서 분리각이 중앙값에 가까운 프레임의 GVHMR 메시 오버레이.
+--bike fit (예전 방식): 뒷모습 구간의 bike_fit 3D 맞추기 lean vs 2D 포즈 상체.
+    선택 기준: view_ratio > 0.75, |fit_yaw| < 25, fit_iou >= 0.55, fit_lowconf가 아닌 프레임. 분리각 = fit_lean_s - body_lean.
 
 사용법:
-    uv run python tools/separation_board.py sessions/2026-11-21/segments.json --runs 1 2 3 4 5 7
+    uv run python tools/separation_board.py sessions/2026-11-21/segments.json --ref sessions/reference-coach/segments.json
+    uv run python tools/separation_board.py sessions/2026-11-21/segments.json --bike fit --runs 1 2 3 4 5 7
 """
 import argparse
 import csv
@@ -50,16 +55,178 @@ def lean_dir_of(seg):
     return PATHS.feat_dir(seg, cfg, "lean")
 
 
+# ---------------------------------------------------------------- GVHMR 모드
+TURNS, TURN_WIN, TURN_MAX = (15, 30, 45), 5, 60
+
+
+def gvhmr_item(seg, run):
+    """런 하나의 GVHMR 값: 프레임별 회전·자전거(손목선)·상체 롤과 회전 단계별 중앙값."""
+    import body3d_gvhmr as G
+    cfg = PATHS.load_cfg(seg)
+    od = G.out_dir(seg, cfg)
+    rows = G.read_csv(od / f"run{run}.csv")
+    z = np.load(od / f"gvhmr_run{run}.npz")
+    turn = G.turn_of(z, rows)
+
+    def num(k):
+        return np.array([G.fnum(x.get(k)) if G.fnum(x.get(k)) is not None else np.nan for x in rows])
+
+    grip, torso, view = num("grip_roll"), num("torso_roll"), num("cam_view_signed")
+    sep = grip - torso
+    stats = {}
+    for T in TURNS:
+        m = (np.abs(turn - T) <= TURN_WIN) & np.isfinite(sep)
+        stats[T] = dict(n=int(m.sum()), mask=m,
+                        bike=float(np.median(grip[m])) if m.any() else None,
+                        body=float(np.median(torso[m])) if m.any() else None,
+                        sep=float(np.median(sep[m])) if m.any() else None,
+                        view=float(np.median(view[m])) if m.any() else None)
+    return dict(G=G, cfg=cfg, od=od, rows=rows, z=z, turn=turn, grip=grip, torso=torso, sep=sep, stats=stats)
+
+
+def gvhmr_tile(seg, run, d, name, size):
+    """회전 30° 구간에서 분리각이 중앙값에 가까운 프레임(메시가 있는 프레임 중)에 메시·손목선을 그린 사진."""
+    import cv2
+    G, cfg, z = d["G"], d["cfg"], d["z"]
+    vf = [int(v) for v in z["verts_frames"]]
+    seqs = np.array([int(x["seq_frame"]) for x in d["rows"]])
+    has = np.isin(seqs, vf) & np.isfinite(d["sep"])
+    st = d["stats"][30]
+    cand = np.nonzero(st["mask"] & has)[0]
+    if len(cand):
+        k = cand[np.argmin(np.abs(d["sep"][cand] - st["sep"]))]
+    else:
+        hk = np.nonzero(has)[0]
+        k = hk[np.argmin(np.abs(d["turn"][hk] - 30))]
+    rr = next(x for x in cfg["runs"] if x["run"] == run)
+    off = G.seek_offset(PATHS.video_dir(cfg) / rr["file"], rr["start"])
+    crow, extra = G.compute_run(d["od"] / f"gvhmr_run{run}.npz", G.lean_rows_of(seg, cfg, run), raw=False, off=off)
+    seq = int(seqs[k])
+    row = next(x for x in crow if x["seq_frame"] == seq)
+    cap = cv2.VideoCapture(str(PATHS.video_dir(cfg) / rr["file"]))
+    img = None
+    for _ in range(seq + 1):
+        ok, img = cap.read()
+    cap.release()
+    i = extra["idx"][seq]
+    head = (f"{name} · 회전 {d['turn'][k]:.0f}° · f{d['rows'][k]['frame']}",
+            f"자전거 {d['grip'][k]:+.0f}°  상체 {d['torso'][k]:+.0f}°  분리각 {d['sep'][k]:+.0f}°")
+    return G.render_tile(img, z["verts_c"][vf.index(seq)], z["faces"], z["K"], extra["Jc"][i], extra["up_c"][i],
+                         row, z["boxes"][i], tile=size, line="grip", header=head)
+
+
+def board_gvhmr(a, seg, runs, out):
+    items = []
+    if a.ref:
+        items.append((ROOT / a.ref, 0, "코치님", True))
+    items += [(seg, r, f"Run {r}", False) for r in runs]
+    CW = 900
+    head, foot = 170, 200
+    W, H = CELL + 40 + CW + 30, head + ROW * len(items) + foot
+    board = Image.new("RGB", (W, H), (22, 24, 28))
+    dr = ImageDraw.Draw(board)
+    dr.text((24, 16), "좌회전 뱅크 · 자전거 vs 상체 기울기 (GVHMR 3D, 중력 기준)", font=f(34, True), fill=(255, 255, 255))
+    dr.text((26, 66), "노랑 = 자전거 기울기(3D 손목선 = 핸들바 근사)   초록 = 상체 롤(골반→목)   파랑 숫자 = 분리각(자전거 - 상체)",
+            font=f(18), fill=(210, 210, 210))
+    dr.text((26, 94), "가로축 = 골반 방향이 구간 시작부터 왼쪽으로 돈 각도. 같은 회전 단계(15·30·45° ±5°)끼리 비교. 분리각 +면 자전거를 몸보다 더 눕힘.",
+            font=f(18), fill=(210, 210, 210))
+    dr.text((26, 122), "왼쪽 사진: 회전 30° 근처 프레임에 GVHMR 메시를 겹침 (초록 화살표 = 중력 위, 빨강 = 상체, 주황 = 손목선)",
+            font=f(16), fill=(160, 160, 160))
+    cx0, cx1 = CELL + 200, W - 40
+
+    def X(t):
+        return cx0 + (cx1 - cx0) * t / TURN_MAX
+
+    summary = []
+    for i, (s, r, name, is_ref) in enumerate(items):
+        y0 = head + i * ROW
+        d = gvhmr_item(s, r)
+        tile = gvhmr_tile(s, r, d, name, CELL)
+        if is_ref:
+            ImageDraw.Draw(tile).rectangle([1, 1, CELL - 2, CELL - 2], outline=GOLD, width=5)
+        board.paste(tile, (0, y0))
+        dr.text((CELL + 30, y0 + 30), name, font=f(28, True), fill=GOLD if is_ref else (255, 255, 255))
+        ns = "/".join(str(d["stats"][T]["n"]) for T in TURNS)
+        dr.text((CELL + 30, y0 + 74), f"프레임 {ns}", font=f(15), fill=(160, 160, 160))
+        dr.text((CELL + 30, y0 + 96), "(15/30/45°)", font=f(13), fill=(130, 130, 130))
+        cy0, cy1 = y0 + 20, y0 + ROW - 92
+
+        def Y(v):
+            return cy1 - (cy1 - cy0) * (v + 10) / 60   # -10..50°
+
+        for T in TURNS:
+            dr.rectangle([X(T - TURN_WIN), cy0, X(T + TURN_WIN), cy1], fill=(34, 37, 44))
+        for g in (0, 20, 40):
+            dr.line([cx0, Y(g), cx1, Y(g)], fill=(60, 62, 68), width=1)
+            dr.text((cx0 - 34, Y(g) - 9), f"{g}°", font=f(13), fill=(120, 120, 120))
+        for t in range(0, TURN_MAX + 1, 15):
+            dr.text((X(t) - 10, cy1 + 4), f"{t}°", font=f(13), fill=(120, 120, 120))
+        m = d["turn"] <= TURN_MAX
+        o = np.argsort(d["turn"][m], kind="stable")
+        for vals, col in ((d["torso"], BODY_C), (d["grip"], BIKE_C)):
+            pts = [(X(t), Y(v)) for t, v in zip(d["turn"][m][o], vals[m][o]) if np.isfinite(v)]
+            if len(pts) > 1:
+                dr.line(pts, fill=col, width=2)
+            for q in pts:
+                dr.ellipse([q[0] - 3, q[1] - 3, q[0] + 3, q[1] + 3], fill=col)
+        for T in TURNS:
+            st = d["stats"][T]
+            tx = X(T) - 60
+            if st["sep"] is None:
+                dr.text((tx, cy1 + 26), "프레임 없음", font=f(16), fill=(150, 150, 150))
+                continue
+            dr.text((tx, cy1 + 24), f"분리각 {st['sep']:+.0f}°", font=f(22, True), fill=SEP_C)
+            dr.text((tx, cy1 + 56), f"자전거 {st['bike']:.0f} 상체 {st['body']:.0f} 시점 {st['view']:+.0f}°",
+                    font=f(13), fill=(150, 150, 150))
+        summary.append((name, d["stats"]))
+        dr.line([0, y0 + ROW - 1, W, y0 + ROW - 1], fill=(50, 52, 58), width=1)
+    note = ("측정값(GVHMR 3D). 손목선은 사용자가 그린 핸들바 선 45프레임과 평균 3.3° 차이(최대 16°). 상체 롤은 정답으로 검증하지 못함. "
+            "회전 단계마다 프레임이 2~9개뿐이라 런별 값은 ±3~5° 흔들릴 수 있음 → 큰 차이만 본다.\n"
+            "뒷모습에서 몸에 가린 손목은 모델이 추정한 위치. 시점(0° = 바로 뒤)이 옆으로 갈수록 롤 추정이 약해짐.")
+    if a.ref:
+        note += "\n코치님: 촬영 자리가 달라 같은 회전에서 시점이 더 옆쪽이다(시점 숫자 참고). 직접 비교는 참고만."
+    if 6 in runs:
+        note += " Run 6: 다른 촬영 자리."
+    yy = H - foot + 14
+    for para in note.split("\n"):
+        line = ""
+        for ch in para:
+            if dr.textlength(line + ch, font=f(16)) > W - 48:
+                dr.text((24, yy), line, font=f(16), fill=(160, 160, 160))
+                yy += 24
+                line = ch
+            else:
+                line += ch
+        dr.text((24, yy), line, font=f(16), fill=(160, 160, 160))
+        yy += 26
+    out.parent.mkdir(parents=True, exist_ok=True)
+    board.save(out)
+    print("saved:", out)
+    for name, st in summary:
+        parts = []
+        for T in TURNS:
+            x = st[T]
+            parts.append(f"{T}° n={x['n']} " + (f"bike {x['bike']:.1f} body {x['body']:.1f} sep {x['sep']:+.1f} view {x['view']:+.0f}"
+                                                 if x["sep"] is not None else "-"))
+        print(f"  {name}: " + " | ".join(parts))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("segments")
-    ap.add_argument("--runs", type=int, nargs="*", default=[1, 2, 3, 4, 5, 7])
+    ap.add_argument("--bike", choices=["gvhmr", "fit"], default="gvhmr",
+                    help="gvhmr: GVHMR 손목선 vs 3D 상체 롤(기본). fit: bike_fit lean vs 2D 상체(예전 방식)")
+    ap.add_argument("--runs", type=int, nargs="*", default=None, help="기본: gvhmr 1~7, fit 1 2 3 4 5 7")
     ap.add_argument("--ref", default=None, help="코치 segments.json (run 0을 첫 줄에 추가)")
     ap.add_argument("--min-iou", type=float, default=0.55)
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
     seg = ROOT / a.segments
-    out = Path(a.out) if a.out else PATHS.out_base(seg) / "insights" / "left_bank_separation.png"
+    if a.bike == "gvhmr":
+        out = Path(a.out) if a.out else PATHS.out_base(seg) / "insights" / "left_bank_separation.png"
+        return board_gvhmr(a, seg, a.runs or [1, 2, 3, 4, 5, 6, 7], out)
+    a.runs = a.runs or [1, 2, 3, 4, 5, 7]
+    out = Path(a.out) if a.out else PATHS.out_base(seg) / "insights" / "left_bank_separation_fit.png"
     items = []
     if a.ref:
         items.append((lean_dir_of(ROOT / a.ref), 0, "코치님", True))

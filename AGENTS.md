@@ -19,13 +19,13 @@ ai-mtb-coach: MTB 강습 영상(코치님 카톡 영상 + 텍스트 피드백)�
   - `compare_runs.py` 구간 비교 시트·동기화 영상
   - `analyze_pose.py` 라이더 추적·크롭·뼈대, 동기화 그리드
   - `analyze_lean.py` 크롭 재인식(자세·관절각)
-  - `bike_sam2.py` SAM2 자전거 마스크(`--kp-prompt`: 포즈 키포인트 프롬프트)
-  - `bike_fit.py` 3D 자전거 실루엣 맞추기(기울기·yaw). 자전거 지오메트리는 segments.json의 `"bike"`. 사용자가 그린 핸들바 선(`sessions/<세션>/bar_hints.json`)을 힌트로 씀(`--no-hints`로 끔)
+  - `bike_sam2.py` SAM2 자전거 마스크(`--kp-prompt`: 포즈 키포인트 프롬프트). `--deshadow`는 땅 그림자를 뺀 마스크를 `masks_deshadow/`에 따로 만듦(`masks/`는 원본 그대로)
+  - `bike_fit.py` 3D 자전거 실루엣 맞추기(기울기·yaw). 자전거 지오메트리는 segments.json의 `"bike"`. 사용자가 그린 핸들바 선(`sessions/<세션>/bar_hints.json`)은 `--hints`로 켤 때만 씀(기본은 끔, 그린 선을 채점 기준으로 남김). 입력은 기본 `masks/`(원본), `--masks deshadow`로 그림자 뺀 마스크. 자전거 기울기는 참고 값
   - `bar_hint_board.py` 핸들바 선 그리기 보드(`make`)와 그린 선 추출(`extract`)
   - `compare_reference.py` 코치 vs 내 런 정렬 비교
   - `berm_line.py` 뱅크 배경판·벽면 분할·타이어 접지 궤적
   - `insight_board.py` 인사이트 장면 보드(spec JSON)
-  - `separation_board.py` 자전거 vs 상체 기울기 보드(`--ref`로 코치 추가)
+  - `separation_board.py` 자전거 vs 상체 기울기 보드(`--ref`로 코치 추가). 기본은 GVHMR 손목선 vs 3D 상체 롤을 회전 단계(15·30·45°)별로 비교. `--bike fit`은 예전 bike_fit 방식
   - `leanout_board.py` 린아웃 측정 시도(현재 근사가 부정확, LOG 참고)
   - `body3d_gvhmr.py` GVHMR 중력 기준 3D 몸 자세(상체 롤·피치, 손·발 자전거 평면, 엉덩이 오프셋). infer는 WSL의 `$GVHMR_HOME` 환경에서 돌림
   - `body3d_sam3d.py` SAM 3D Body 3D 몸 각도(상체 롤·피치, 손-발 자전거 기울기). infer 단계는 `$SAM3DBODY_HOME`의 별도 환경. `body3d_board.py`는 비교 보드. `--gravity gvhmr`로 GVHMR 중력 사용

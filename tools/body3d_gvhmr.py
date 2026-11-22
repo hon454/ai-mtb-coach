@@ -525,6 +525,15 @@ def project(X, K):
     return np.stack([K[0, 0] * X[..., 0] / X[..., 2] + K[0, 2], K[1, 1] * X[..., 1] / X[..., 2] + K[1, 2]], -1)
 
 
+def turn_of(z, rows):
+    """구간 첫 행부터 골반 방향이 왼쪽으로 돈 누적 각도(°, 단조 증가로 만듦). z: gvhmr npz, rows: run<N>.csv 행(seq_frame)."""
+    face = hproj(rodrigues(z["go_g"]) @ np.array([0, 0, 1.0]))
+    idx = {int(f): i for i, f in enumerate(z["frames"])}
+    si = np.array([idx[int(x["seq_frame"])] for x in rows])
+    hd = np.degrees(np.unwrap(np.arctan2(face[:, 0], face[:, 2])))
+    return np.maximum.accumulate(hd[si] - hd[si[0]])
+
+
 def seek_offset(video, start, pad=0.4):
     """analyze_lean.py는 cap.set(POS_FRAMES, f0) 뒤 순차로 읽어 frame 번호를 붙인다. 일부 영상(코치님 클립)은
     시크가 한 프레임 앞에 떨어져서, 기존 CSV의 frame f가 순차 디코드 f+off 번째 장면이다. 그 off를 잰다."""
@@ -625,7 +634,9 @@ def lean_rows_of(seg, cfg, run):
 FONT = "C:/Windows/Fonts/malgun.ttf"
 
 
-def render_tile(img, verts, faces, K, Jc, up_c, row, box, tile=420):
+def render_tile(img, verts, faces, K, Jc, up_c, row, box, tile=420, line="handfoot", header=None):
+    """line: \"handfoot\" = 발목 중점→손목 중점(자전거 평면 근사), \"grip\" = 왼손목–오른손목 선(핸들바 근사)을 양쪽으로 늘여 그림.
+    header: 위 띠에 쓸 두 줄(없으면 각도 요약)."""
     import cv2
     from PIL import Image, ImageDraw, ImageFont
     x0, y0, x1, y1 = box
@@ -662,18 +673,26 @@ def render_tile(img, verts, faces, K, Jc, up_c, row, box, tile=420):
     cv2.line(out, p0, (p0[0], p0[1] - 110), (150, 150, 150), 1, cv2.LINE_AA)            # 화면 수직
     cv2.arrowedLine(out, p0, P(pel + 0.9 * up_c), (80, 230, 80), 3, cv2.LINE_AA, tipLength=0.18)  # 중력 위
     cv2.line(out, p0, P(Jc[J_NECK]), (60, 60, 255), 3, cv2.LINE_AA)                     # 몸통
-    ext = A + 1.25 * (W - A)
-    cv2.line(out, P(A - 0.15 * (W - A)), P(ext), (0, 200, 255), 2, cv2.LINE_AA)        # 발목중점→손목중점
-    for X in (W, A):
-        cv2.circle(out, P(X), 5, (0, 200, 255), -1, cv2.LINE_AA)
+    if line == "grip":
+        L_, R_ = Jc[J_LWR], Jc[J_RWR]
+        cv2.line(out, P(L_ + 0.6 * (L_ - R_)), P(R_ + 0.6 * (R_ - L_)), (0, 200, 255), 3, cv2.LINE_AA)   # 손목선(핸들바 근사)
+        for X in (L_, R_):
+            cv2.circle(out, P(X), 5, (0, 200, 255), -1, cv2.LINE_AA)
+    else:
+        ext = A + 1.25 * (W - A)
+        cv2.line(out, P(A - 0.15 * (W - A)), P(ext), (0, 200, 255), 2, cv2.LINE_AA)        # 발목중점→손목중점
+        for X in (W, A):
+            cv2.circle(out, P(X), 5, (0, 200, 255), -1, cv2.LINE_AA)
     im = Image.fromarray(cv2.cvtColor(out, cv2.COLOR_BGR2RGB))
     dr = ImageDraw.Draw(im)
     f1, f2 = ImageFont.truetype(FONT, 17), ImageFont.truetype(FONT, 15)
     dr.rectangle((0, 0, tile, 50), fill=(0, 0, 0))
-    dr.text((6, 2), f"f{row['frame']}  p{float(row['progress']):.2f}  시점 {row['cam_view_deg']:.0f}°  conf {row['b3d_conf']:.2f}",
-            font=f2, fill=(230, 230, 230))
-    dr.text((6, 24), f"몸 롤 {row['torso_roll']:+.0f}°  피치 {row['torso_pitch']:+.0f}°  자전거 {row['bike_lean_body']:+.0f}°  "
-            f"엉덩이 {row['hip_offset_mm']:+.0f}mm", font=f1, fill=(255, 255, 255))
+    if header is None:
+        header = (f"f{row['frame']}  p{float(row['progress']):.2f}  시점 {row['cam_view_deg']:.0f}°  conf {row['b3d_conf']:.2f}",
+                  f"몸 롤 {row['torso_roll']:+.0f}°  피치 {row['torso_pitch']:+.0f}°  자전거 {row['bike_lean_body']:+.0f}°  "
+                  f"엉덩이 {row['hip_offset_mm']:+.0f}mm")
+    dr.text((6, 2), header[0], font=f2, fill=(230, 230, 230))
+    dr.text((6, 24), header[1], font=f1, fill=(255, 255, 255))
     return im
 
 
@@ -756,7 +775,8 @@ def cmd_diag(a):
     from scipy.signal import savgol_filter
     lines, table = [], []
     THETAS = [15, 30, 45, 60, 75, 90]
-    keys = ["torso_roll", "body_lean", "torso_pitch", "bike_lean_body", "separation_b3d", "hip_offset_mm", "fit_lean_s"]
+    keys = ["torso_roll", "body_lean", "torso_pitch", "bike_lean_body", "separation_b3d", "hip_offset_mm", "fit_lean_s",
+            "grip_roll", "separation_grip"]   # separation_grip = 손목선 − 상체 롤 (separation_board 기본 분리각)
     for segp in ([a.ref] if a.ref else []) + [a.segments]:
         seg = (ROOT / segp).resolve(); cfg = PATHS.load_cfg(seg); od = out_dir(seg, cfg)
         for r in cfg["runs"]:
@@ -799,12 +819,9 @@ def cmd_diag(a):
                 f"corr(cam_roll, torso_roll) {corr(croll, roll):+.2f} | fit_yaw - view_signed (non-lowconf, n={ok.sum()}): "
                 f"med {np.nanmedian((fy - vs)[ok]):+.0f}, corr {corr(fy[ok], vs[ok]):+.2f}")
             # 회전 각도 맞춤: 구간 첫 행부터 골반 방향이 왼쪽으로 돈 누적 yaw
-            idx = {int(f): i for i, f in enumerate(fr)}
-            si = np.array([idx[int(x["seq_frame"])] for x in rows])
-            hd = np.degrees(np.unwrap(np.arctan2(face[:, 0], face[:, 2])))
-            turn = hd[si] - hd[si[0]]
-            turn = np.maximum.accumulate(turn)   # 단조로 만들어 보간
-            vals = {k: g(k, "old" if k in ("body_lean", "fit_lean_s") else "new") for k in keys}
+            turn = turn_of(z, rows)
+            vals = {k: g(k, "old" if k in ("body_lean", "fit_lean_s") else "new") for k in keys if k != "separation_grip"}
+            vals["separation_grip"] = vals["grip_roll"] - vals["torso_roll"]
             vals["fit_lean_s"] = np.where(lowc, np.nan, vals["fit_lean_s"])
             for th in THETAS:
                 m = np.abs(turn - th) <= 5
