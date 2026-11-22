@@ -20,6 +20,8 @@
     uv run python tools/body3d_sam3d.py all sessions/2026-11-21/segments.json [--runs 1 3] [--prompt kp]
     uv run python tools/body3d_sam3d.py board sessions/2026-11-21/segments.json --ref sessions/reference-coach/segments.json
     uv run python tools/body3d_sam3d.py hints sessions/2026-11-21/segments.json --ref sessions/reference-coach/segments.json
+    uv run python tools/body3d_sam3d.py angles sessions/2026-11-21/segments.json --gravity gvhmr --suffix _gvgrav
+    # GVHMR와 프레임별 비교·그린 선 채점·Run 5 진단: tools/body3d_vs_gvhmr.py
     # infer만 직접: "$SAM3DBODY_HOME/.venv/Scripts/python.exe" tools/body3d_sam3d.py infer sessions/...
     # 다른 설정: --prompt kp, --focal 2203 → raw_kp_f1500_*, raw_box_f2203_* (board가 민감도 행으로 자동 사용)
 
@@ -48,15 +50,21 @@ SAM 3D Body의 카메라 머리는 박스 위치와 초점거리로 시선 방�
 
 좌표·가정:
     - SAM 3D Body 출력은 카메라 좌표(OpenCV: x 오른쪽, y 아래, z 앞), 단위 미터.
-    - 중력 g: 카메라 +y(화면 아래). 폰이 대략 수평(롤 0)이고 피치 0이라는 가정이다. 2D 지표와 같은 가정.
-      피치 오차는 옆모습에서 torso_roll에 거의 그대로 들어가고 뒷모습에서는 거의 안 들어간다.
-      분리각(bike_lean_body − torso_roll)은 같은 평면의 차이라 이 오차가 대부분 상쇄된다. --pitch로 민감도를 본다.
+    - 중력 g (--gravity):
+      image(기본)  카메라 +y(화면 아래). 폰이 수평(롤 0)이고 피치 0이라는 가정. 2D 지표와 같은 가정. --pitch로 민감도.
+      gvhmr        GVHMR이 본 프레임별 중력(body3d_gvhmr.py 출력의 incam·global 관절 Kabsch 회전, σ=2프레임 평활).
+                   관절을 프레임마다 수평 맞춤(level_rot)한 뒤 같은 정의로 잰다. 열 cam_pitch_g, cam_roll_g에 기록.
+      gvhmr_med    같은 중력의 런 중앙값 하나.
+      2026-11-21 측정: GVHMR 카메라는 피치 +2~+5°(아래를 봄), 롤 −5~−7°. 화면 아래 가정을 바꾸면 뒷모습 상체 롤이
+      5~9° 줄고(Run 5만 1°), 분리각은 2° 안에서만 바뀐다(LOG 2026-11-23 GVHMR 비교).
+    - lean CSV(frame·progress·view_ratio·실루엣 값)는 lean_csv(): GVHMR 세션이 고정한 fix4 스냅샷이 있으면 그것을 쓴다.
 
 정의 (u = −g = 위, 각도 단위 도, 키포인트 번호는 MHR70):
     P = 골반 중심 = 양 엉덩이(9, 10) 중점.  N = 목(69).  W = 양 손목(41, 62) 중점.  A = 양 발목(13, 14) 중점.
     진행 방향 t: 골반 앞 축 F = (N−P) × (오른엉덩이 − 왼엉덩이)를 수평면(u에 수직)에 투영한 방향.
                  프레임마다 yaw를 구하고, 펼친 뒤 Hampel(7프레임, 3 MAD) + 가우시안(σ=2프레임)으로 평활.
                  --heading bar면 손목→손목 선에 수직인 수평 방향을 쓴다(민감도 시험용).
+                 --heading gvhmr면 GVHMR 골반 방향(진단용, --gravity gvhmr* 필요). 진행 방향 합치기가 아니다.
                  진행 방향 오차는 앞숙임을 롤로 섞는다(상체 앞숙임 ~35°면 1°당 약 0.7°). 손-발 벡터도 비슷하게
                  앞으로 기울어 있어서 분리각에서는 대부분 상쇄된다.
     왼쪽 축 L = u × t (라이더 왼쪽, 수평).
@@ -111,7 +119,7 @@ M_LSH, M_RSH = 5, 6
 SHARED = ["b3d_conf", "torso_roll", "torso_pitch", "hip_offset_mm", "bike_lean_body"]
 RAW = ["torso_roll_raw", "torso_pitch_raw", "hip_offset_mm_raw", "bike_lean_body_raw", "bar_roll_raw"]
 EXTRA = ["bar_roll", "travel_yaw", "yaw_pelvis_raw", "yaw_bar_raw", "cam_dist_m", "wrist_sep_m",
-         "shoulder_w_m", "focal_px", "box_fixed"]
+         "shoulder_w_m", "focal_px", "box_fixed", "grav_src", "cam_pitch_g", "cam_roll_g", "heading_src"]
 
 
 # ---------------------------------------------------------------- 공통
@@ -122,6 +130,14 @@ def out_dir(seg, cfg):
 
 def lean_dir(seg, cfg):
     return PATHS.feat_dir(seg, cfg, "lean")
+
+
+def lean_csv(seg, cfg, run):
+    """lean CSV 경로. bike_fit 재실행이 fit_* 열을 계속 바꾸므로, GVHMR 세션이 2026-11-23 00:10에 고정한
+    스냅샷(left_bank_gvhmr/lean_snapshot, fix4 = fit_variants/fix4_orig와 같음)이 있으면 그것을 쓴다.
+    frame·t·progress·view_ratio는 어느 쪽이든 같다."""
+    snap = PATHS.feat_dir(seg, cfg, "gvhmr") / "lean_snapshot" / f"run{run}.csv"
+    return snap if snap.exists() else lean_dir(seg, cfg) / f"run{run}.csv"
 
 
 def sel_runs(cfg, runs):
@@ -442,6 +458,77 @@ def travel_dir(kp3d, u, yaw_offset=0.0, heading="pelvis"):
     return wrap(yaw_raw), wrap(ys), t, wrap(yaw_bar)
 
 
+def level_rot(up_c):
+    """카메라 좌표 위쪽 up_c (N,3)를 −gravity(0) = (0,−1,0)으로 보내는 최소 회전 (N,3,3)."""
+    a = unit(np.asarray(up_c, float))
+    U0 = -gravity(0.0)
+    v = np.cross(a, U0)
+    s2 = np.sum(v * v, 1)
+    c = a @ U0
+    Kx = np.zeros((len(a), 3, 3))
+    Kx[:, 0, 1], Kx[:, 0, 2], Kx[:, 1, 0] = -v[:, 2], v[:, 1], v[:, 2]
+    Kx[:, 1, 2], Kx[:, 2, 0], Kx[:, 2, 1] = -v[:, 0], -v[:, 1], v[:, 0]
+    k = np.where(s2 > 1e-12, (1 - c) / np.maximum(s2, 1e-12), 0.5)
+    return np.eye(3)[None] + Kx + k[:, None, None] * (Kx @ Kx)
+
+
+def cam_tilt(up_c):
+    """up_c (카메라 좌표) → 카메라 피치(도, + = 아래를 봄)와 롤(도, + = 위쪽이 화면 오른쪽으로 기움).
+    롤은 GVHMR CSV의 cam_roll_deg와 같은 방향 정의(그쪽은 골반 위치에서 투영해 원근만큼 조금 다르다)."""
+    a = unit(np.asarray(up_c, float))
+    return np.degrees(np.arcsin(np.clip(-a[:, 2], -1, 1))), np.degrees(np.arctan2(a[:, 0], -a[:, 1]))
+
+
+def _kabsch(A, B):
+    """B ≈ R A + t 인 R (A, B: (N,3)). body3d_gvhmr.py와 같은 방법."""
+    a, b = A - A.mean(0), B - B.mean(0)
+    U, _, Vt = np.linalg.svd(a.T @ b)
+    d = np.sign(np.linalg.det(Vt.T @ U.T))
+    return Vt.T @ np.diag([1, 1, d]) @ U.T
+
+
+def _rodrigues(aa):
+    th = np.linalg.norm(aa, axis=-1, keepdims=True)
+    k = aa / np.maximum(th, 1e-9)
+    Kx = np.zeros(aa.shape[:-1] + (3, 3))
+    Kx[..., 0, 1], Kx[..., 0, 2], Kx[..., 1, 0] = -k[..., 2], k[..., 1], k[..., 2]
+    Kx[..., 1, 2], Kx[..., 2, 0], Kx[..., 2, 1] = -k[..., 0], -k[..., 1], k[..., 0]
+    th = th[..., None]
+    return np.eye(3) + np.sin(th) * Kx + (1 - np.cos(th)) * (Kx @ Kx)
+
+
+def gvhmr_frame(seg, cfg, run, frames, mode="frame", sigma=2.0):
+    """GVHMR이 본 중력 위쪽 up과 골반 방향 fwd를 카메라 좌표로, 우리 frame 번호마다 돌려준다.
+
+    입력: outputs/<세션>/<feature>_gvhmr/gvhmr_run<N>.npz, run<N>.csv (body3d_gvhmr.py 출력, 읽기만).
+    - 카메라 회전 = 같은 프레임의 GVHMR incam 관절과 global 관절의 Kabsch 맞춤(body3d_gvhmr.py와 같음).
+      up = R^T (0,1,0), fwd = R^T × (전역 회전 × 몸 +z의 수평 성분) = GVHMR 진행 방향(골반 방향).
+    - npz frames는 순차 디코드 번호다. GVHMR CSV의 seq_frame − frame(코치 클립 −1, 런 1~7은 0)으로 맞춘다.
+    - mode="frame": up을 성분별 가우시안(σ프레임) 평활 후 정규화. mode="median": 우리 구간의 중앙값 하나.
+    - 중력 위쪽은 카메라 회전이라 초점거리와 무관하게 옮길 수 있다고 본다(GVHMR 초점거리 ~100mm 환산 ≠ 우리 1500px).
+    """
+    gd = PATHS.feat_dir(seg, cfg, "gvhmr")
+    z = np.load(gd / f"gvhmr_run{run}.npz")
+    offs = {int(r["seq_frame"]) - int(r["frame"]) for r in read_csv(gd / f"run{run}.csv")}
+    if len(offs) != 1:
+        raise ValueError(f"GVHMR frame 차이가 일정하지 않다: {offs}")
+    off = offs.pop()
+    Jc, Jg = z["joints_c"].astype(np.float64), z["joints_g"].astype(np.float64)
+    R = np.stack([_kabsch(Jc[i], Jg[i]) for i in range(len(Jc))])
+    up = np.einsum("lji,j->li", R, np.array([0.0, 1.0, 0.0]))
+    face = _rodrigues(z["go_g"].astype(np.float64)) @ np.array([0.0, 0.0, 1.0])
+    face[:, 1] = 0.0
+    fwd = np.einsum("lji,lj->li", R, unit(face))
+    nf = np.asarray(z["frames"]).astype(int)
+    take = np.array([int(np.argmin(np.abs(nf - (f + off)))) for f in frames])
+    gap = np.abs(nf[take] - (np.asarray(frames) + off))
+    if mode == "median":
+        up = np.repeat(unit(np.median(up[take], 0))[None], len(nf), 0)
+    elif sigma:
+        up = unit(np.stack([gauss_smooth(up[:, k], sigma) for k in range(3)], 1))
+    return dict(up=up[take], fwd=unit(fwd[take]), src=f"gvhmr_{mode}", missing=int((gap > 0).sum()), off=off)
+
+
 def conf_2d(kp2d, yolo_kp, yolo_c, kappa=0.1):
     """SAM 3D Body 2D 투영 vs YOLO 키포인트 일치도 (OKS 비슷한 0~1)."""
     out = np.full(len(kp2d), np.nan)  # NaN = YOLO 근거 부족(판단 불가), 0 = 불일치
@@ -458,14 +545,31 @@ def conf_2d(kp2d, yolo_kp, yolo_c, kappa=0.1):
     return out
 
 
-def compute_rows(raw, prep, lean_rows, pitch=0.0, yaw_offset=0.0, sigma=1.5, heading="pelvis"):
-    """raw/prep npz와 lean CSV 행으로 출력 행(dict)을 만든다. lean CSV의 모든 프레임에 한 행."""
-    u = -gravity(pitch)
+def compute_rows(raw, prep, lean_rows, pitch=0.0, yaw_offset=0.0, sigma=1.5, heading="pelvis", grav=None):
+    """raw/prep npz와 lean CSV 행으로 출력 행(dict)을 만든다. lean CSV의 모든 프레임에 한 행.
+
+    grav: gvhmr_frame()의 결과(dict up, fwd, src). 주면 관절을 프레임마다 GVHMR 중력으로 수평 맞춤한 뒤 잰다
+    (pitch 인자는 무시). heading="gvhmr"이면 진행 방향도 GVHMR 골반 방향을 쓴다(진단용, grav 필요)."""
     fr = [int(x) for x in raw["frame"]]
     kp3d = raw["kp3d"].astype(np.float64)
     pidx = {int(f): i for i, f in enumerate(prep["frame"])}
     pi = [pidx[f] for f in fr]
-    yaw_raw, yaw_s, t, yaw_bar = travel_dir(kp3d, u, yaw_offset, heading)
+    if grav is not None:
+        u = -gravity(0.0)
+        Q = level_rot(grav["up"])
+        kp3d = np.einsum("nij,nkj->nki", Q, kp3d)
+        cpitch, croll = cam_tilt(grav["up"])
+    else:
+        u = -gravity(pitch)
+        cpitch = croll = np.full(len(fr), np.nan)
+    yaw_raw, yaw_s, t, yaw_bar = travel_dir(kp3d, u, yaw_offset, "bar" if heading == "bar" else "pelvis")
+    if heading == "gvhmr":
+        if grav is None:
+            raise ValueError("heading=gvhmr에는 grav가 필요하다")
+        f = np.einsum("nij,nj->ni", Q, grav["fwd"])
+        t = unit(f - np.outer(f @ u, u))
+        e1, e2 = horiz_basis(u)
+        yaw_s = yaw_of(t, u, e1, e2)
     ang = body_angles(kp3d, t, u)
     conf = conf_2d(raw["kp2d"], prep["kp"][pi], prep["kpc"][pi])
     keep = ~(conf < 0.3)  # NaN(근거 없음)은 평활에 포함
@@ -490,7 +594,9 @@ def compute_rows(raw, prep, lean_rows, pitch=0.0, yaw_offset=0.0, sigma=1.5, hea
                        wrist_sep_m=r1(np.linalg.norm(kp3d[i, M_RWR] - kp3d[i, M_LWR]), 3),
                        shoulder_w_m=r1(np.linalg.norm(kp3d[i, M_RSH] - kp3d[i, M_LSH]), 3),
                        focal_px=r1(float(raw["focal"]), 0),
-                       box_fixed=int(bool(raw["box_fixed"][i])) if "box_fixed" in raw.files else "")
+                       box_fixed=int(bool(raw["box_fixed"][i])) if "box_fixed" in raw.files else "",
+                       grav_src=grav["src"] if grav is not None else f"image(pitch {pitch:+.0f})",
+                       cam_pitch_g=r1(cpitch[i]), cam_roll_g=r1(croll[i]), heading_src=heading)
         rows.append(row)
     return rows
 
@@ -499,16 +605,27 @@ def load_run(seg, cfg, run, tag):
     out = out_dir(seg, cfg)
     raw = np.load(out / f"raw_{tag}_run{run}.npz")
     prep = np.load(out / f"prep_run{run}.npz")
-    lean = read_csv(lean_dir(seg, cfg) / f"run{run}.csv")
+    lean = read_csv(lean_csv(seg, cfg, run))
     return raw, prep, lean
 
 
-def cmd_angles(seg, cfg, runs, tag, pitch=0.0, yaw_offset=0.0, suffix="", heading="pelvis"):
+def grav_of(seg, cfg, run, raw, gmode):
+    """gmode: image(화면 아래 가정) | gvhmr(프레임별) | gvhmr_med(런 중앙값)."""
+    if gmode == "image":
+        return None
+    frames = [int(f) for f in raw["frame"]]
+    return gvhmr_frame(seg, cfg, run, frames, mode="median" if gmode == "gvhmr_med" else "frame")
+
+
+def cmd_angles(seg, cfg, runs, tag, pitch=0.0, yaw_offset=0.0, suffix="", heading="pelvis", gmode="image"):
     out = out_dir(seg, cfg)
     keys = ["run", "frame", "t", "progress", "view_ratio"] + SHARED + RAW + EXTRA
     for r in runs:
         raw, prep, lean = load_run(seg, cfg, r["run"], tag)
-        rows = compute_rows(raw, prep, lean, pitch, yaw_offset, heading=heading)
+        grav = grav_of(seg, cfg, r["run"], raw, gmode)
+        if grav is not None and grav["missing"]:
+            print(f"  run {r['run']}: GVHMR 창 밖 {grav['missing']}프레임은 가장 가까운 프레임 값")
+        rows = compute_rows(raw, prep, lean, pitch, yaw_offset, heading=heading, grav=grav)
         p = out / f"run{r['run']}{suffix}.csv"
         with open(p, "w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=keys, extrasaction="ignore")
@@ -595,7 +712,7 @@ def montage_cell(seg, cfg, run, fi, raw, prep, faces, row, cell=384, label_extra
 def merged_rows(seg, cfg, run, suffix=""):
     """sam3dbody CSV + lean CSV(body_lean, fit_lean_s 등)를 프레임으로 합친다."""
     rows = read_csv(out_dir(seg, cfg) / f"run{run}{suffix}.csv")
-    lean = {int(x["frame"]): x for x in read_csv(lean_dir(seg, cfg) / f"run{run}.csv")}
+    lean = {int(x["frame"]): x for x in read_csv(lean_csv(seg, cfg, run))}
     for x in rows:
         lr = lean.get(int(x["frame"]), {})
         x["body_lean_2d"] = lr.get("body_lean", "")
@@ -659,8 +776,39 @@ def cmd_selftest():
             worst = max(worst, err)
             if err > 1e-6:
                 print("  불일치", yaw, (roll, pitch, lean, off), "→", np.round(got, 3))
+    # 기울어진 카메라: 같은 뼈대를 카메라 롤 7°·피치 5°로 돌려 놓고 up_c를 주면 같은 각도가 나와야 한다
+    roll, pitch, lean, off, yaw = 20, 35, 30, 50, 25.0
+    y = math.radians(yaw)
+    t = math.sin(y) * e1 + math.cos(y) * e2
+    L = unit(np.cross(u, t))
+    v = u + math.tan(math.radians(roll)) * L + math.tan(math.radians(pitch)) * t
+    b = math.cos(math.radians(lean)) * u + math.sin(math.radians(lean)) * L
+    n = unit(np.cross(t, b))
+    A = np.array([0.3, 0.2, 6.0])
+    P = A + 0.6 * b + 0.1 * t + off / 1000.0 * n
+    kp = np.zeros((70, 3))
+    kp[M_LHIP], kp[M_RHIP] = P + 0.15 * L, P - 0.15 * L
+    kp[M_NECK] = P + 0.5 * unit(v)
+    kp[M_LWR], kp[M_RWR] = A + 0.56 * b + 0.5 * t - 0.33 * n, A + 0.56 * b + 0.5 * t + 0.33 * n
+    kp[M_LAN], kp[M_RAN] = A - 0.12 * n, A + 0.12 * n
+    cr, sr = math.cos(math.radians(7)), math.sin(math.radians(7))
+    cp, sp = math.cos(math.radians(5)), math.sin(math.radians(5))
+    Rc = np.array([[cr, -sr, 0], [sr, cr, 0], [0, 0, 1]]) @ np.array([[1, 0, 0], [0, cp, -sp], [0, sp, cp]])
+    kps = np.repeat((kp @ Rc.T)[None], 9, 0)
+    up_c = np.repeat((u @ Rc.T)[None], 9, 0)
+    kpl = np.einsum("nij,nkj->nki", level_rot(up_c), kps)
+    _, _, tt, _ = travel_dir(kpl, u)
+    a = body_angles(kpl, tt, u)
+    got = (a["torso_roll"][4], a["torso_pitch"][4], a["bike_lean_body"][4], a["hip_offset_mm"][4], a["bar_roll"][4])
+    err = max(abs(g - e) for g, e in zip(got, (roll, pitch, lean, off, lean)))
+    cpitch, croll = cam_tilt(up_c)
+    tilt_ok = err < 1e-6 and abs(cpitch[0] - 5) < 1e-6 and abs(croll[0] - 7) < 1e-6
+    a0 = body_angles(kps, travel_dir(kps, u)[2], u)
     print(f"selftest: 최대 오차 {worst:.2e}", "OK" if worst < 1e-6 else "FAIL")
-    return worst < 1e-6
+    print(f"selftest 카메라 기울기: 수평 맞춤 후 오차 {err:.2e}, 피치 {cpitch[0]:+.2f} 롤 {croll[0]:+.2f} "
+          f"(맞춤 없이 재면 롤 {a0['torso_roll'][4]:+.1f}°, 자전거 {a0['bike_lean_body'][4]:+.1f}°)",
+          "OK" if tilt_ok else "FAIL")
+    return worst < 1e-6 and tilt_ok
 
 
 # ---------------------------------------------------------------- 메인
@@ -677,7 +825,11 @@ def main():
     ap.add_argument("--pitch", type=float, default=0.0, help="angles: 카메라 피치 가정(도, + = 아래를 봄)")
     ap.add_argument("--yaw-offset", type=float, default=0.0, help="angles: 진행 방향 yaw에 더할 값(민감도 시험)")
     ap.add_argument("--suffix", default="", help="angles: 출력 CSV 이름 꼬리(민감도 시험용)")
-    ap.add_argument("--heading", choices=["pelvis", "bar"], default="pelvis", help="angles: 진행 방향 출처")
+    ap.add_argument("--heading", choices=["pelvis", "bar", "gvhmr"], default="pelvis",
+                    help="angles: 진행 방향 출처 (gvhmr = GVHMR 골반 방향, 진단용, --gravity gvhmr* 필요)")
+    ap.add_argument("--gravity", choices=["image", "gvhmr", "gvhmr_med"], default="image",
+                    help="angles: 중력 출처. image = 화면 아래 가정(기본), gvhmr = GVHMR 프레임별 중력, "
+                         "gvhmr_med = GVHMR 중력의 런 중앙값")
     ap.add_argument("--frames", type=int, nargs="*", help="montage: 고를 프레임 번호")
     ap.add_argument("--name", default=None, help="montage: 출력 파일 이름")
     ap.add_argument("--ref", default=None, help="board: 코치 segments.json")
@@ -701,7 +853,7 @@ def main():
                "--focal", str(a.focal), "--ckpt", a.ckpt] + (["--runs", *map(str, a.runs)] if a.runs else [])
         subprocess.run(cmd, check=True)
     if a.cmd in ("angles", "all"):
-        cmd_angles(seg, cfg, runs, tag, a.pitch, a.yaw_offset, a.suffix, a.heading)
+        cmd_angles(seg, cfg, runs, tag, a.pitch, a.yaw_offset, a.suffix, a.heading, a.gravity)
     if a.cmd in ("montage", "all"):
         cmd_montage(seg, cfg, runs, tag, frames=a.frames, name=a.name)
     if a.cmd == "board":

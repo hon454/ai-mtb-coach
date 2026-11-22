@@ -204,7 +204,7 @@ def make_board(seg, cfg, ref, tag, out=None):
     fmt1 = lambda v: "" if not np.isfinite(v) else f"{v:.1f}"
     alt_names = ["pitch+10", "pitch-10", "yaw+10", "yaw-10", "heading=bar"] + tags_alt
     import datetime
-    lean_csvs = [B.lean_dir(seg, cfg) / f"run{r['run']}.csv" for r in cfg["runs"]]
+    lean_csvs = [B.lean_csv(seg, cfg, r["run"]) for r in cfg["runs"]]
     mt = max(p.stat().st_mtime for p in lean_csvs if p.exists())
     hinted = any("fit_hint" in p.read_text(encoding="utf-8").splitlines()[0] for p in lean_csvs if p.exists())
     sil_lab = (f"실루엣 - 2D (CSV {datetime.datetime.fromtimestamp(mt):%m-%d %H:%M}"
