@@ -10,14 +10,18 @@
     infer    [SAM 3D Body 환경]    전체 프레임 + 라이더 박스(+키포인트 프롬프트)로 추론 → raw_<tag>_run<N>.npz
     angles   [저장소 .venv]        각도 계산·평활 → run<N>.csv
     montage  [저장소 .venv]        메시 오버레이 몽타주 → montage_run<N>.jpg
-    board    [저장소 .venv]        비교 보드 → compare_board.png
+    board    [저장소 .venv]        비교 보드 → compare_board.png (body3d_board.py)
+    hints    [저장소 .venv]        사용자가 그린 핸들바 선(sessions/<세션>/bar_hints.json)과 비교
+                                   → bar_hints_eval_<tag>.csv, bar_hints_board_<tag>.jpg
     all      prep → infer(하위 프로세스로 $SAM3DBODY_HOME/.venv 실행) → angles → montage
     selftest 합성 뼈대로 각도 정의·부호 확인
 
 사용법:
     uv run python tools/body3d_sam3d.py all sessions/2026-11-21/segments.json [--runs 1 3] [--prompt kp]
     uv run python tools/body3d_sam3d.py board sessions/2026-11-21/segments.json --ref sessions/reference-coach/segments.json
+    uv run python tools/body3d_sam3d.py hints sessions/2026-11-21/segments.json --ref sessions/reference-coach/segments.json
     # infer만 직접: "$SAM3DBODY_HOME/.venv/Scripts/python.exe" tools/body3d_sam3d.py infer sessions/...
+    # 다른 설정: --prompt kp, --focal 2203 → raw_kp_f1500_*, raw_box_f2203_* (board가 민감도 행으로 자동 사용)
 
 환경변수:
     SAM3DBODY_HOME   sam-3d-body 클론 폴더. 그 안에 .venv/(Python 3.11, PyTorch cu128)와
@@ -29,10 +33,13 @@
 입력 선택: 전체 프레임 + 라이더 박스. 768 크롭은 원본 픽셀을 키운 것이라 정보가 늘지 않고, 크롭 변환이 저장돼 있지 않다.
 SAM 3D Body의 카메라 머리는 박스 위치와 초점거리로 시선 방향을 정하므로, 전체 프레임과 실제 초점거리를 주는 쪽이
 기하학적으로 맞다. 박스는 크롭에서 다시 잡은 YOLO 사람 박스를 전체 프레임 좌표로 되돌린 것이다.
+크롭 재검출이 다른 사람을 고르는 프레임이 있어(2026-11-21 run 2 f216), infer에서 앞뒤 3프레임 중앙값 박스와
+중심이 박스 높이의 0.35배 넘게 떨어지거나 크기가 35％ 넘게 다르면 중앙값 박스로 바꾼다(box_fixed 열).
 
 프롬프트: 공개 API(process_one_image)는 박스, 사람 마스크(양성), 카메라 내부 행렬만 받는다. 음성 마스크(자전거 제외)
 경로는 없다. 키포인트 프롬프트는 내부 함수 run_keypoint_prompt(MHR70 번호)로만 줄 수 있다.
-    --prompt box : 박스만
+체크포인트 설정의 PROMPT_ENCODER.MAX_NUM_CLICKS는 2다. 12점을 한꺼번에 넣는 kp 설정은 학습 범위 밖일 수 있다.
+    --prompt box : 박스만 (기본, 권장)
     --prompt kp  : 박스 + YOLO 키포인트(conf≥0.5, 몸통·팔·다리 12점)를 첫 몸 디코더 뒤와 손 보정 단계에 프롬프트로 추가
 
 카메라: SAM 3D Body는 초점거리를 추정하지 않는다(MoGe2 FOV 추정기는 선택 사항, 설치 안 함). 기본값은 이미지 대각선
@@ -49,6 +56,9 @@ SAM 3D Body의 카메라 머리는 박스 위치와 초점거리로 시선 방�
     P = 골반 중심 = 양 엉덩이(9, 10) 중점.  N = 목(69).  W = 양 손목(41, 62) 중점.  A = 양 발목(13, 14) 중점.
     진행 방향 t: 골반 앞 축 F = (N−P) × (오른엉덩이 − 왼엉덩이)를 수평면(u에 수직)에 투영한 방향.
                  프레임마다 yaw를 구하고, 펼친 뒤 Hampel(7프레임, 3 MAD) + 가우시안(σ=2프레임)으로 평활.
+                 --heading bar면 손목→손목 선에 수직인 수평 방향을 쓴다(민감도 시험용).
+                 진행 방향 오차는 앞숙임을 롤로 섞는다(상체 앞숙임 ~35°면 1°당 약 0.7°). 손-발 벡터도 비슷하게
+                 앞으로 기울어 있어서 분리각에서는 대부분 상쇄된다.
     왼쪽 축 L = u × t (라이더 왼쪽, 수평).
     torso_roll     : v = N−P를 t에 수직인 평면에 투영한 기울기. atan2(v·L, v·u). + = 라이더 왼쪽.
     torso_pitch    : v를 L에 수직인 평면(시상면)에 투영한 기울기. atan2(v·t, v·u). + = 앞숙임.
@@ -57,7 +67,8 @@ SAM 3D Body의 카메라 머리는 박스 위치와 초점거리로 시선 방�
     hip_offset_mm  : 그 평면에서 P까지의 부호 있는 거리. b̂ = h에서 t 성분을 뺀 단위벡터, n = t × b̂(라이더 오른쪽).
                      (P−A)·n × 1000. + = 라이더 오른쪽(좌회전의 바깥).
     b3d_conf       : SAM 3D Body 2D 투영과 YOLO 크롭 키포인트(conf≥0.5인 몸통·팔·다리 12점)의 일치도.
-                     mean(exp(−d²/(2·(0.1·T)²))), T = YOLO 몸통 길이(px). 4점 미만이면 0.
+                     mean(exp(−d²/(2·(0.1·T)²))), T = YOLO 몸통 길이(px). 4점 미만이거나 어깨·엉덩이 conf<0.3이면
+                     빈칸(YOLO 근거 없음, 판단 불가 — 블러 프레임에서 흔함). 빈칸은 평활 입력에 포함한다.
                      SAM 3D Body는 자체 신뢰도를 내지 않는다. --prompt kp에서는 일부 순환적이다(같은 점을 프롬프트로 씀).
     교차 확인 열:
     bar_roll       : 손목→손목 벡터(왼→오)의 수평 대비 기울기 = asin(ŵ·u). + = 왼쪽(오른손이 높음).
@@ -66,6 +77,7 @@ SAM 3D Body의 카메라 머리는 박스 위치와 초점거리로 시선 방�
     travel_yaw     : 평활한 진행 방향 yaw. 0 = 카메라에서 멀어짐(뒷모습), +90 = 화면 오른쪽으로 감, ±180 = 카메라로 옴.
     *_raw          : 평활 전 프레임별 값(진행 방향만 평활한 t 사용).
     평활 열        : *_raw에 Hampel(7, 3 MAD) + 가우시안(σ=1.5프레임). b3d_conf<0.3 프레임은 평활 입력에서 뺀다.
+    box_fixed      : 1 = 박스 이상치를 이웃 중앙값으로 바꾼 프레임.
 
 GVHMR 세션(left_bank_gvhmr)도 같은 열 이름(b3d_conf, torso_roll, torso_pitch, hip_offset_mm, bike_lean_body)을 쓴다.
 """
@@ -99,7 +111,7 @@ M_LSH, M_RSH = 5, 6
 SHARED = ["b3d_conf", "torso_roll", "torso_pitch", "hip_offset_mm", "bike_lean_body"]
 RAW = ["torso_roll_raw", "torso_pitch_raw", "hip_offset_mm_raw", "bike_lean_body_raw", "bar_roll_raw"]
 EXTRA = ["bar_roll", "travel_yaw", "yaw_pelvis_raw", "yaw_bar_raw", "cam_dist_m", "wrist_sep_m",
-         "shoulder_w_m", "focal_px"]
+         "shoulder_w_m", "focal_px", "box_fixed"]
 
 
 # ---------------------------------------------------------------- 공통
@@ -220,13 +232,32 @@ class PromptHook:
     def forward_step(self, batch, decoder_type="body"):
         out = self._fs(batch, decoder_type=decoder_type)
         if decoder_type == "body" and self.kp is not None and len(self.kp):
+            first = dict(out["mhr"])
             out, _ = self._rkp(batch, out, self._prompt(batch))
+            for k, v in first.items():   # 재추론 출력에 없는 값(hand_box 등)은 첫 추론 값을 유지
+                out["mhr"].setdefault(k, v)
         return out
 
     def run_keypoint_prompt(self, batch, output, keypoint_prompt):
         if self.kp is not None and len(self.kp):
             keypoint_prompt = self.torch.cat([self._prompt(batch), keypoint_prompt], 1)
         return self._rkp(batch, output, keypoint_prompt)
+
+
+def clean_boxes(boxes, win=3, max_jump=0.35, max_scale=0.35):
+    """앞뒤 win프레임 중앙값 박스와 중심이 박스 높이의 max_jump배 넘게 떨어지거나 크기가 max_scale 넘게 다르면
+    중앙값 박스로 바꾼다(크롭 재검출이 다른 사람을 고른 경우). 반환: (박스, 바꿨는지)."""
+    b = np.asarray(boxes, np.float64)
+    out, fixed = b.copy(), np.zeros(len(b), bool)
+    c, h = (b[:, :2] + b[:, 2:]) / 2, b[:, 3] - b[:, 1]
+    for i in range(len(b)):
+        nb = [j for j in range(max(0, i - win), min(len(b), i + win + 1)) if j != i]
+        if len(nb) < 2:
+            continue
+        mc, mh = np.median(c[nb], 0), np.median(h[nb])
+        if np.linalg.norm(c[i] - mc) > max_jump * mh or abs(h[i] / mh - 1) > max_scale:
+            out[i], fixed[i] = np.median(b[nb], 0), True
+    return out, fixed
 
 
 def load_estimator(ckpt):
@@ -256,6 +287,9 @@ def cmd_infer(seg, cfg, runs, prompt, focal, ckpt, limit=None):
         prep = np.load(out / f"prep_run{r['run']}.npz")
         frames = [int(x) for x in prep["frame"]]
         need = dict(zip(frames, range(len(frames))))
+        boxes, box_fixed = clean_boxes(prep["box"])
+        if box_fixed.any():
+            print(f"  run {r['run']}: 박스 이상치 보정 {[frames[i] for i in np.nonzero(box_fixed)[0]]}")
         if limit:
             keep = set(frames[:: max(1, len(frames) // limit)][:limit])
             need = {k: v for k, v in need.items() if k in keep}
@@ -264,7 +298,7 @@ def cmd_infer(seg, cfg, runs, prompt, focal, ckpt, limit=None):
         f0 = max(0, int((r["start"] - PAD) * fps))   # analyze_lean.track_rider와 같은 탐색 후 순차 읽기
         cap.set(cv2.CAP_PROP_POS_FRAMES, f0)
         H = W = None
-        res = {k: [] for k in ("frame", "kp3d", "kp2d", "cam_t", "verts", "jcoords", "global_rot", "box")}
+        res = {k: [] for k in ("frame", "kp3d", "kp2d", "cam_t", "verts", "jcoords", "global_rot", "box", "box_fixed")}
         fi = f0
         last = max(need) if need else -1
         while fi <= last:
@@ -275,9 +309,9 @@ def cmd_infer(seg, cfg, runs, prompt, focal, ckpt, limit=None):
                 i = need[fi]
                 H, W = img.shape[:2]
                 K = torch.tensor([[[focal, 0, W / 2.0], [0, focal, H / 2.0], [0, 0, 1]]], dtype=torch.float32)
-                box = prep["box"][i].astype(np.float32)
+                box = boxes[i].astype(np.float32)
                 if hook is not None:
-                    kp, kc = prep["kp"][i], prep["kpc"][i]
+                    kp, kc = prep["kp"][i], prep["kpc"][i] * (0.0 if box_fixed[i] else 1.0)  # 다른 사람 키포인트는 안 씀
                     sel = [j for j in BODY12 if kc[j] >= 0.5 and np.all(np.isfinite(kp[j]))]
                     hook.kp = np.array([[kp[j][0], kp[j][1], COCO2MHR[j]] for j in sel], np.float32).reshape(-1, 3)
                 with contextlib.redirect_stdout(io.StringIO()):
@@ -292,6 +326,7 @@ def cmd_infer(seg, cfg, runs, prompt, focal, ckpt, limit=None):
                     res["jcoords"].append(o["pred_joint_coords"])
                     res["global_rot"].append(o["global_rot"])
                     res["box"].append(box)
+                    res["box_fixed"].append(bool(box_fixed[i]))
             fi += 1
         cap.release()
         arr = {k: np.array(v) for k, v in res.items()}
@@ -384,29 +419,32 @@ def body_angles(kp3d, t, u):
     return dict(torso_roll=roll, torso_pitch=pitch, bike_lean_body=bike, hip_offset_mm=hip, bar_roll=bar)
 
 
-def travel_dir(kp3d, u, yaw_offset=0.0):
-    """골반 앞 축의 yaw(프레임별), 평활 yaw, 평활 진행 방향 t."""
+def travel_dir(kp3d, u, yaw_offset=0.0, heading="pelvis"):
+    """골반 앞 축의 yaw(프레임별), 평활 yaw, 평활 진행 방향 t, 손목-손목 기준 yaw.
+
+    heading="bar"면 손목→손목 선에 수직인 수평 방향(조향 0 가정)을 평활해 진행 방향으로 쓴다(민감도 시험용).
+    """
     e1, e2 = horiz_basis(u)
     P = (kp3d[:, M_LHIP] + kp3d[:, M_RHIP]) / 2
     U = kp3d[:, M_NECK] - P
     R = kp3d[:, M_RHIP] - kp3d[:, M_LHIP]
     F = np.cross(U, R)
     yaw_raw = yaw_of(F, u, e1, e2)
-    yu = np.degrees(np.unwrap(np.radians(yaw_raw)))
+    w = kp3d[:, M_RWR] - kp3d[:, M_LWR]
+    yaw_bar = yaw_of(np.cross(np.broadcast_to(u, w.shape), w), u, e1, e2)
+    src = yaw_bar if heading == "bar" else yaw_raw
+    yu = np.degrees(np.unwrap(np.radians(src)))
     ys = gauss_smooth(hampel(yu, 7, 3.0), 2.0)
     ys = np.where(np.isfinite(ys), ys, yu) + yaw_offset
     yr = np.radians(ys)
     t = np.sin(yr)[:, None] * e1[None] + np.cos(yr)[:, None] * e2[None]
-    # 손목→손목에 수직인 수평 방향(조향 0 가정) — 교차 확인용
-    w = kp3d[:, M_RWR] - kp3d[:, M_LWR]
-    yaw_bar = yaw_of(np.cross(np.broadcast_to(u, w.shape), w), u, e1, e2)
     wrap = lambda a: (a + 180) % 360 - 180
     return wrap(yaw_raw), wrap(ys), t, wrap(yaw_bar)
 
 
 def conf_2d(kp2d, yolo_kp, yolo_c, kappa=0.1):
     """SAM 3D Body 2D 투영 vs YOLO 키포인트 일치도 (OKS 비슷한 0~1)."""
-    out = np.zeros(len(kp2d))
+    out = np.full(len(kp2d), np.nan)  # NaN = YOLO 근거 부족(판단 불가), 0 = 불일치
     for i in range(len(kp2d)):
         kc, kp = yolo_c[i], yolo_kp[i]
         sel = [j for j in BODY12 if kc[j] >= 0.5 and np.all(np.isfinite(kp[j]))]
@@ -420,17 +458,17 @@ def conf_2d(kp2d, yolo_kp, yolo_c, kappa=0.1):
     return out
 
 
-def compute_rows(raw, prep, lean_rows, pitch=0.0, yaw_offset=0.0, sigma=1.5):
+def compute_rows(raw, prep, lean_rows, pitch=0.0, yaw_offset=0.0, sigma=1.5, heading="pelvis"):
     """raw/prep npz와 lean CSV 행으로 출력 행(dict)을 만든다. lean CSV의 모든 프레임에 한 행."""
     u = -gravity(pitch)
     fr = [int(x) for x in raw["frame"]]
     kp3d = raw["kp3d"].astype(np.float64)
     pidx = {int(f): i for i, f in enumerate(prep["frame"])}
     pi = [pidx[f] for f in fr]
-    yaw_raw, yaw_s, t, yaw_bar = travel_dir(kp3d, u, yaw_offset)
+    yaw_raw, yaw_s, t, yaw_bar = travel_dir(kp3d, u, yaw_offset, heading)
     ang = body_angles(kp3d, t, u)
     conf = conf_2d(raw["kp2d"], prep["kp"][pi], prep["kpc"][pi])
-    keep = conf >= 0.3
+    keep = ~(conf < 0.3)  # NaN(근거 없음)은 평활에 포함
     sm = {k: smooth_series(ang[k], sigma, keep) for k in ang}
     P = (kp3d[:, M_LHIP] + kp3d[:, M_RHIP]) / 2 + raw["cam_t"]
     ridx = {f: i for i, f in enumerate(fr)}
@@ -451,7 +489,8 @@ def compute_rows(raw, prep, lean_rows, pitch=0.0, yaw_offset=0.0, sigma=1.5):
                        yaw_bar_raw=r1(yaw_bar[i]), cam_dist_m=r1(np.linalg.norm(P[i]), 2),
                        wrist_sep_m=r1(np.linalg.norm(kp3d[i, M_RWR] - kp3d[i, M_LWR]), 3),
                        shoulder_w_m=r1(np.linalg.norm(kp3d[i, M_RSH] - kp3d[i, M_LSH]), 3),
-                       focal_px=r1(float(raw["focal"]), 0))
+                       focal_px=r1(float(raw["focal"]), 0),
+                       box_fixed=int(bool(raw["box_fixed"][i])) if "box_fixed" in raw.files else "")
         rows.append(row)
     return rows
 
@@ -464,18 +503,18 @@ def load_run(seg, cfg, run, tag):
     return raw, prep, lean
 
 
-def cmd_angles(seg, cfg, runs, tag, pitch=0.0, yaw_offset=0.0, suffix=""):
+def cmd_angles(seg, cfg, runs, tag, pitch=0.0, yaw_offset=0.0, suffix="", heading="pelvis"):
     out = out_dir(seg, cfg)
     keys = ["run", "frame", "t", "progress", "view_ratio"] + SHARED + RAW + EXTRA
     for r in runs:
         raw, prep, lean = load_run(seg, cfg, r["run"], tag)
-        rows = compute_rows(raw, prep, lean, pitch, yaw_offset)
+        rows = compute_rows(raw, prep, lean, pitch, yaw_offset, heading=heading)
         p = out / f"run{r['run']}{suffix}.csv"
         with open(p, "w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=keys, extrasaction="ignore")
             w.writeheader()
             w.writerows(rows)
-        n = sum(1 for x in rows if x.get("b3d_conf", "") != "")
+        n = sum(1 for x in rows if x.get("torso_roll_raw", "") != "")
         print(f"  angles run {r['run']} [{tag}]: {n}/{len(rows)}행 → {p.name}")
 
 
@@ -628,7 +667,7 @@ def cmd_selftest():
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("cmd", choices=["prep", "infer", "angles", "montage", "board", "all", "selftest"])
+    ap.add_argument("cmd", choices=["prep", "infer", "angles", "montage", "board", "hints", "all", "selftest"])
     ap.add_argument("segments", nargs="?")
     ap.add_argument("--runs", type=int, nargs="*")
     ap.add_argument("--prompt", choices=["box", "kp"], default="box")
@@ -638,6 +677,7 @@ def main():
     ap.add_argument("--pitch", type=float, default=0.0, help="angles: 카메라 피치 가정(도, + = 아래를 봄)")
     ap.add_argument("--yaw-offset", type=float, default=0.0, help="angles: 진행 방향 yaw에 더할 값(민감도 시험)")
     ap.add_argument("--suffix", default="", help="angles: 출력 CSV 이름 꼬리(민감도 시험용)")
+    ap.add_argument("--heading", choices=["pelvis", "bar"], default="pelvis", help="angles: 진행 방향 출처")
     ap.add_argument("--frames", type=int, nargs="*", help="montage: 고를 프레임 번호")
     ap.add_argument("--name", default=None, help="montage: 출력 파일 이름")
     ap.add_argument("--ref", default=None, help="board: 코치 segments.json")
@@ -661,12 +701,17 @@ def main():
                "--focal", str(a.focal), "--ckpt", a.ckpt] + (["--runs", *map(str, a.runs)] if a.runs else [])
         subprocess.run(cmd, check=True)
     if a.cmd in ("angles", "all"):
-        cmd_angles(seg, cfg, runs, tag, a.pitch, a.yaw_offset, a.suffix)
+        cmd_angles(seg, cfg, runs, tag, a.pitch, a.yaw_offset, a.suffix, a.heading)
     if a.cmd in ("montage", "all"):
         cmd_montage(seg, cfg, runs, tag, frames=a.frames, name=a.name)
     if a.cmd == "board":
         import body3d_board
         body3d_board.make_board(seg, cfg, a.ref, tag)
+    if a.cmd == "hints":
+        import body3d_board
+        ents = [("coach", Path(a.ref), PATHS.load_cfg(a.ref))] if a.ref else []
+        ents.append((cfg.get("session", "run"), seg, cfg))
+        body3d_board.eval_bar_hints(ents, tag, out_dir(seg, cfg))
 
 
 if __name__ == "__main__":
