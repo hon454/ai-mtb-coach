@@ -95,7 +95,7 @@ def wrap_text(dr, text, f, width):
 def main():
     spec_path = Path(sys.argv[1])
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
-    pose_m = YOLO(str(ROOT / "models" / "yolo11x-pose.pt"))
+    pose_m = YOLO(str(PATHS.MODELS / "yolo11x-pose.pt"))
     ref_seg, stu_seg = ROOT / spec["ref"], ROOT / spec["student"]
     ref = CR.load_run(ref_seg, 0)
     studs = [CR.load_run(stu_seg, r) for r in spec["runs"]]

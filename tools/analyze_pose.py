@@ -297,7 +297,7 @@ def main():
     feat = cfg.get("feature", "feature")
     out_dir = PATHS.feat_dir(seg, cfg, "pose")
     out_dir.mkdir(exist_ok=True)
-    models = Path(__file__).resolve().parent.parent / "models"
+    models = PATHS.MODELS
     models.mkdir(exist_ok=True)
     pose_m = YOLO(str(models / "yolo11x-pose.pt"))
     seg_m = None  # 자전거 분할은 기운 뒷모습에서 검출이 약해 현재 미사용

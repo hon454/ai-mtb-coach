@@ -354,7 +354,7 @@ def main():
     seg = Path(a.segments)
     cfg = json.loads(seg.read_text(encoding="utf-8"))
     out = PATHS.feat_dir(seg, cfg, "lean")
-    models = Path(__file__).resolve().parent.parent / "models"
+    models = PATHS.MODELS
     seg_m = YOLO(str(models / "yolo11x-seg.pt"))
     pose_m = YOLO(str(models / "yolo11x-pose.pt"))
     for r in cfg["runs"]:

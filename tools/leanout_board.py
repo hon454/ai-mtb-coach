@@ -106,7 +106,7 @@ def main():
     lean_dir = PATHS.feat_dir(seg, cfg, "lean")
     out_dir = PATHS.out_base(seg) / "insights"
     out_dir.mkdir(exist_ok=True)
-    pose_m = YOLO(str(ROOT / "models" / "yolo11x-pose.pt"))
+    pose_m = YOLO(str(PATHS.MODELS / "yolo11x-pose.pt"))
     runs = [CR.load_run(seg, r) for r in a.runs]
     a_dst = float(np.mean([d["anchor"] for d in runs] + [CR.load_run(REF, 0)["anchor"]]))
 

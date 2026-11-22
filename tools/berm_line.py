@@ -43,7 +43,7 @@ import paths as PATHS  # noqa: E402
 import analyze_lean as AL  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-MODELS = ROOT / "models"
+MODELS = PATHS.MODELS
 FONT = "C:/Windows/Fonts/malgun.ttf"
 FONT_B = "C:/Windows/Fonts/malgunbd.ttf"
 PLATE_N = 25          # 중앙값 합성에 쓸 최대 프레임 수

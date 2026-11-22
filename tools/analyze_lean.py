@@ -220,7 +220,7 @@ def main():
     out = PATHS.feat_dir(seg, cfg, "lean")
     (out / "crops").mkdir(parents=True, exist_ok=True)
     (out / "overlay").mkdir(exist_ok=True)
-    models = Path(__file__).resolve().parent.parent / "models"
+    models = PATHS.MODELS
     pose_m = YOLO(str(models / "yolo11x-pose.pt"))
     seg_m = YOLO(str(models / "yolo11x-seg.pt"))
     for r in cfg["runs"]:
