@@ -12,6 +12,7 @@ analyze_lean.py 다음에 실행:
   각각 앞·뒤로 추적하고, 프레임마다 앵커들끼리 가장 많이 겹치는 마스크(medoid)를 고른다
   (포즈가 믿을 만하면 몸통·머리·접지선 아래 침범을 감점). 작은 조각·납작한 바닥 줄무늬는 지운다.
 결과: run<N>.csv 에 bike_lean_sam, separation_sam 열 추가, masks/ 와 overlay_sam/ 에 저장.
+--deshadow: 있는 마스크에서 땅에 진 바퀴 그림자를 뺀다(아래 '그림자 제거' 주석). SAM2를 다시 돌렸으면 그 뒤에 다시 실행.
 """
 import argparse
 import csv
@@ -342,6 +343,136 @@ def run_one(r, out, seg_m, pose_m, sam_path, kp_prompt_flag=False, anchors=None,
     print(f"  run {run}: 프롬프트 프레임 {i0}, SAM 축 {got}프레임, 뒷모습 {len(rear)} 중 {sum(1 for x in rear if x.get('bike_lean_sam'))}")
 
 
+# ---------------------------------------------------------------- 그림자 제거 (--deshadow)
+# 해가 든 코너 출구에서 SAM2 자전거 마스크가 땅에 진 바퀴 그림자(호 모양)까지 감싼다(2026-11-21 7런 모두).
+# 마스크 안에서 "땅 색(밖 고리의 색상)과 같은 색상이고 더 어두운" 덩어리 중 아래 조건을 모두 만족하면 그림자로 본다.
+#   - 테두리 비율: 덩어리 둘레 중 마스크 바깥과 맞닿은 비율 ≥ SH_EDGE (바퀴 안으로 비친 땅은 타이어에 둘러싸여 낮다)
+#   - 밝은 그림자 비율 ≥ SH_BRIGHT (L<SH_LDARK인 짙은 화소는 밝은 그림자 곁 SH_NEAR px 안에서만 덩어리에 붙는다)
+#   - 땅 높이 아래 비율 ≥ SH_BELOW. 땅 높이 = 낮은 발목 y + 0.15 m. 흙 묻은 타이어 띠(뒷모습)는 대부분 이보다 위에 있다.
+# 발목이 안 잡히면 그 프레임은 건드리지 않는다. 원본은 masks_raw/에 두고 늘 거기서 다시 만든다.
+SH_EDGE, SH_BRIGHT, SH_BELOW, SH_NEAR, SH_LDARK = 0.40, 0.35, 0.5, 8, 28
+
+
+def _lab(img):
+    L = cv2.cvtColor(img, cv2.COLOR_BGR2LAB).astype(float)
+    L[..., 0] *= 100 / 255
+    L[..., 1:] -= 128
+    return L
+
+
+def shadow_region(img, m, ground_y):
+    """마스크 m 안의 그림자 화소(bool). ground_y: 이 y보다 아래가 땅."""
+    Lb = _lab(img)
+    ys = np.nonzero(m)[0]
+    y0, y1 = ys.min(), ys.max()
+    ring = cv2.dilate(m.astype(np.uint8), np.ones((61, 61))) > 0
+    ring &= ~(cv2.dilate(m.astype(np.uint8), np.ones((15, 15))) > 0)
+    ring[:int(y0 + 0.4 * (y1 - y0))] = False
+    g = Lb[ring]
+    gL, gh = np.median(g[:, 0]), np.degrees(np.arctan2(np.median(g[:, 2]), np.median(g[:, 1])))
+    L, a, b = Lb[..., 0], Lb[..., 1], Lb[..., 2]
+    ch, hu = np.hypot(a, b), np.degrees(np.arctan2(b, a))
+    cand = (m & (L >= 10) & (L <= gL * 0.92) & (ch >= np.where(L < SH_LDARK, 6.0, 4.5))
+            & (np.abs((hu - gh + 180) % 360 - 180) <= 22))
+    bright = cand & (L >= SH_LDARK)
+    near = cv2.dilate(cv2.morphologyEx(bright.astype(np.uint8), cv2.MORPH_OPEN, np.ones((5, 5))),
+                      np.ones((2 * SH_NEAR + 1, 2 * SH_NEAR + 1))) > 0
+    cand = bright | (cand & (L < SH_LDARK) & near)
+    cand = cv2.morphologyEx(cand.astype(np.uint8), cv2.MORPH_OPEN, np.ones((5, 5)))
+    cand = (cv2.morphologyEx(cand, cv2.MORPH_CLOSE, np.ones((9, 9))) > 0) & m
+    outside = cv2.dilate((~m).astype(np.uint8), np.ones((5, 5))) > 0
+    n, lab, st, _ = cv2.connectedComponentsWithStats(cand.astype(np.uint8), connectivity=8)
+    rem = np.zeros_like(m)
+    for i in range(1, n):
+        if st[i, cv2.CC_STAT_AREA] < 300 or st[i, cv2.CC_STAT_TOP] + st[i, cv2.CC_STAT_HEIGHT] / 2 < y0 + 0.45 * (y1 - y0):
+            continue
+        comp = lab == i
+        per = comp & ~(cv2.erode(comp.astype(np.uint8), np.ones((3, 3))) > 0)
+        if (per & outside).sum() < SH_EDGE * max(per.sum(), 1):
+            continue
+        if (comp & (L >= SH_LDARK)).sum() < SH_BRIGHT * comp.sum():
+            continue
+        if np.mean(np.nonzero(comp)[0] > ground_y) < SH_BELOW:
+            continue
+        rem |= comp
+    return rem
+
+
+def deshadow_mask(img, m, ground_y):
+    """그림자를 뺀 마스크. 지운 곳 가장자리 5px와, 그 곁에 남은 작은 부스러기(전체 3％ 미만)도 뺀다.
+    핸들바 끝처럼 원래 따로 떨어진 조각은 그대로 둔다."""
+    if m.sum() < 500:
+        return m
+    rem = shadow_region(img, m, ground_y)
+    if not rem.any():
+        return m
+    k = m & ~(cv2.dilate(rem.astype(np.uint8), np.ones((5, 5))) > 0)
+    k = cv2.morphologyEx(k.astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3))) > 0
+    n, lab, st, _ = cv2.connectedComponentsWithStats(k.astype(np.uint8), connectivity=8)
+    if n > 2:
+        tot = st[1:, cv2.CC_STAT_AREA].sum()
+        near = cv2.dilate(rem.astype(np.uint8), np.ones((11, 11))) > 0
+        keep = np.ones(n, bool)
+        keep[0] = False
+        for i in range(1, n):
+            if st[i, cv2.CC_STAT_AREA] < 0.03 * tot and (near & (lab == i)).any():
+                keep[i] = False
+        k = keep[lab]
+    return k
+
+
+def deshadow_run(r, out, pose_m):
+    """이미 만든 masks/run<N>_f*.png에서 그림자를 뺀다. 원본은 masks_raw/에 한 번만 복사해 두고 늘 거기서 다시 만든다."""
+    run = r["run"]
+    raw, dst = out / "masks_raw", out / "masks"
+    raw.mkdir(exist_ok=True)
+    rows = list(csv.DictReader(open(out / f"run{run}.csv", encoding="utf-8")))
+    sc = [float(x["fit_scale"]) * 4 for x in rows if x.get("fit_scale")]   # px/m @768 (bike_fit 결과가 있으면)
+    s_run = float(np.median(sc)) if sc else None
+    log, changed = {}, []
+    for x in rows:
+        name = f"run{run}_f{int(x['frame']):04d}"
+        mp, rp = dst / f"{name}.png", raw / f"{name}.png"
+        if not rp.exists():
+            if not mp.exists():
+                continue
+            rp.write_bytes(mp.read_bytes())
+        m = cv2.imread(str(rp), 0) > 127
+        img = cv2.imread(str(out / "crops" / f"{name}.jpg"))
+        gy = None
+        kp = pose_kp(img, pose_m)
+        if kp is not None:
+            k, c, _ = kp
+            ank = [k[i][1] for i in (15, 16) if c[i] >= 0.3]
+            if ank:
+                leg = float(np.linalg.norm((k[11] + k[12]) / 2 - (k[15] + k[16]) / 2))   # 엉덩이-발목 ≈ 0.9 m
+                gy = max(ank) + 0.15 * (s_run if s_run else leg / 0.9)
+        km = m if gy is None else deshadow_mask(img, m, gy)
+        cv2.imwrite(str(mp), km.astype(np.uint8) * 255)
+        frac = 1 - km.sum() / max(m.sum(), 1)
+        log[name] = round(float(frac), 3)
+        if frac > 0.02:
+            changed.append((name, img, m, km, frac))
+    (raw / f"deshadow_run{run}.json").write_text(json.dumps(log, indent=0), encoding="utf-8")
+    if changed:   # 확인용: 지운 곳 빨강, 남은 마스크 하늘색
+        tiles = []
+        for name, img, m, km, frac in changed[:40]:
+            v = img.copy()
+            gone = m & ~km
+            v[gone] = (v[gone] * 0.4 + np.array([0, 0, 255]) * 0.6).astype(np.uint8)
+            cs, _ = cv2.findContours(km.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+            cv2.drawContours(v, cs, -1, (255, 255, 0), 2)
+            cv2.putText(v, f"{name} -{frac * 100:.0f}%", (8, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (255, 255, 255), 3)
+            tiles.append(cv2.resize(v, (320, 320)))
+        while len(tiles) % 8:
+            tiles.append(np.zeros_like(tiles[0]))
+        cv2.imwrite(str(raw / f"deshadow_check_run{run}.jpg"),
+                    np.vstack([np.hstack(tiles[i:i + 8]) for i in range(0, len(tiles), 8)]))
+    v = np.array(list(log.values()) or [0])
+    print(f"  run {run}: 그림자 제거 {len(log)}프레임 중 {int((v > 0.02).sum())}프레임 바뀜 "
+          f"(10％ 넘게 {int((v > 0.10).sum())}), 최대 {v.max() * 100:.0f}％")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("segments")
@@ -350,13 +481,19 @@ def main():
     ap.add_argument("--montage", help="실행한 런의 마스크 몽타주(12장) 저장 경로. 여러 런이면 _run<N> 붙임")
     ap.add_argument("--kp-debug", action="store_true", help="앵커별 추적 결과를 _kp_debug/에 저장")
     ap.add_argument("--kp-anchors", type=int, nargs="*", help="키포인트 앵커 프레임 번호 직접 지정")
+    ap.add_argument("--deshadow", action="store_true", help="SAM2를 다시 돌리지 않고, 있는 마스크에서 땅 그림자만 뺌(원본은 masks_raw/)")
     a = ap.parse_args()
     seg = Path(a.segments)
     cfg = json.loads(seg.read_text(encoding="utf-8"))
     out = PATHS.feat_dir(seg, cfg, "lean")
     models = PATHS.MODELS
-    seg_m = YOLO(str(models / "yolo11x-seg.pt"))
     pose_m = YOLO(str(models / "yolo11x-pose.pt"))
+    if a.deshadow:
+        for r in cfg["runs"]:
+            if not a.runs or r["run"] in a.runs:
+                deshadow_run(r, out, pose_m)
+        return
+    seg_m = YOLO(str(models / "yolo11x-seg.pt"))
     for r in cfg["runs"]:
         if a.runs and r["run"] not in a.runs:
             continue
