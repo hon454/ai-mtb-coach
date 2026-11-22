@@ -229,6 +229,45 @@ def run_tables(J):
     return out
 
 
+def silhouette_checks(log, J):
+    """독립 기준: 실루엣 fix4(+ GVHMR cam_roll, LOW-CONF 제외)로 손목선·손-발을 채점하고, 실루엣 분리각을 진행률 구간별로 본다."""
+    bins = [(0.0, 0.3)] + PROG_BINS
+    log("")
+    log("[실루엣 기준] fix4 fit_lean_s + cam_roll, LOW-CONF 제외. 실루엣 - GVHMR 롤 / 실루엣 - SAM B 롤 (n), 진행률 구간:")
+    for lab, rows in J.items():
+        rr = [x for x in rows if not x["fit_lowconf"] and np.isfinite(x["fit_s"])]
+        cells = []
+        for lo, hi in bins:
+            sel = [x for x in rr if lo <= x["progress"] < hi]
+            cells.append(f"{lo:.1f}~{hi:.1f}: " + (f"{med([x['fit_s'] + x['cam_roll'] - x['g_roll'] for x in sel]):+.0f} / "
+                                                    f"{med([x['fit_s'] + x['cam_roll'] - x['B_roll'] for x in sel]):+.0f} ({len(sel)})"
+                                                    if sel else "-"))
+        log(f"    {lab:6s} " + "  ".join(cells))
+    allr = [x for rows in J.values() for x in rows if not x["fit_lowconf"] and np.isfinite(x["fit_s"])]
+    for nm, sel in (("전체", allr), ("뒷모습<30°", [x for x in allr if x["view"] < 30]),
+                    ("Run 5 뒷모습", [x for x in allr if x["view"] < 30 and x["run"] == 5])):
+        out = []
+        for k, kn in (("g_bar", "GV 손목선"), ("g_bike", "GV 손-발"), ("B_bar", "SAM 손목선"), ("B_bike", "SAM 손-발")):
+            d = np.array([x[k] - (x["fit_s"] + x["cam_roll"]) for x in sel], float)
+            d = d[np.isfinite(d)]
+            out.append(f"{kn} MAE {np.mean(np.abs(d)):.1f} 평균차 {np.mean(d):+.1f}")
+        log(f"  실루엣 대비 {nm} (n={len(sel)}): " + " | ".join(out))
+
+
+def view_trend(log, recs):
+    """2D dA(그린 선 끝 + 검출 발목)의 시점 추세를 빼고 런별 잔차를 본다."""
+    E = [r for r in recs if "dA_2d_drawn" in r]
+    v = np.radians([r["view"] for r in E])
+    y = np.array([r["dA_2d_drawn"] for r in E])
+    X = np.c_[np.ones(len(v)), np.sin(v)]
+    c, *_ = np.linalg.lstsq(X, y, rcond=None)
+    res = y - X @ c
+    log(f"  2D dA 시점 추세: {c[0]:+.0f} + {c[1]:+.0f}·sin(시점) mm, 잔차 SD {res.std():.0f} mm. 런별 잔차:")
+    for key in sorted({(r["sess"], r["run"]) for r in E}):
+        idx = [i for i, r in enumerate(E) if (r["sess"], r["run"]) == key]
+        log(f"    {key[0][:5]} r{key[1]}: " + " ".join(f"f{E[i]['frame']}:{res[i]:+.0f}" for i in idx) + f"  평균 {res[idx].mean():+.0f}")
+
+
 # ---------------------------------------------------------------- 그린 핸들바 선 45프레임
 
 def hint_lines():
@@ -731,7 +770,7 @@ def main():
     log("[런별] 카메라 피치·롤(GVHMR, 중앙값), 뒷모습(<30°) 상체 롤 A→B→GVHMR, 분리각 A→B(B런중앙값)→GVHMR, 손목선 분리각 B / GVHMR")
     for lab, t in rt.items():
         log(f"    {lab:6s} 피치 {t['cam_pitch']:+.1f} ({t['cam_pitch_rng'][0]:+.0f}~{t['cam_pitch_rng'][1]:+.0f}) 롤 {t['cam_roll']:+.1f} | "
-            f"롤 {t['A']['roll_rear']:+.0f}→{t['B']['roll_rear']:+.0f}→{t['g']['roll_rear']:+.0f} | "
+            f"롤 {t['A']['roll_rear']:+.1f}→{t['B']['roll_rear']:+.1f}(B런중앙값 {t['Bmed']['roll_rear']:+.1f})→{t['g']['roll_rear']:+.1f} | "
             f"분리각 {t['A']['sep_rear']:+.0f}→{t['B']['sep_rear']:+.0f}({t['Bmed']['sep_rear']:+.0f})→{t['g']['sep_rear']:+.0f} | "
             f"손목선 분리각 {t['B']['sepbar_rear']:+.0f} / {t['g']['sepbar_rear']:+.0f} (n={t['n_rear']})")
     log("  같은 진행률 구간 분리각 (손-발 A/B/GV ; 손목선 B/GV):")
@@ -739,7 +778,9 @@ def main():
         log(f"    {lab:6s} " + "  ".join(
             f"{b[0]:.1f}~{b[1]:.1f}: " + "/".join(f"{t[s]['bins'][b][0]:+.0f}" for s in ("A", "B", "g")) + " ; "
             + "/".join(f"{t[s]['bins'][b][1]:+.0f}" for s in ("B", "g")) for b in PROG_BINS))
+    silhouette_checks(log, J)
     recs, stats = drawn45(log)
+    view_trend(log, recs)
     with open(od / "drawn45_eval.csv", "w", newline="", encoding="utf-8") as fh:
         keys = sorted({k for r in recs for k in r}, key=lambda k: list(recs[0].keys()).index(k) if k in recs[0] else 999)
         w = csv.DictWriter(fh, keys)
