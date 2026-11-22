@@ -9,6 +9,9 @@
        view_ratio > 0.75 전체 3D, 설정 바꿈(프롬프트·초점거리·피치 ±10°·진행 방향 ±10°)에 따른 범위.
     B. 프레임 간 흔들림: 연속 프레임 차이의 중앙값(평활 전 값).
     C. 시점 혼입: 3D torso_roll - 2D body_lean, 뒷모습 vs 그 밖.
+    D. 같은 진행률 구간(0.3~0.5, 0.5~0.7, 0.7~0.9) 분리각, 최대값(기본과 설정 범위), 분리각이 양수로 넘어가는 진행률.
+       뒷모습 창은 런마다 코너의 다른 구간에 있어서 런 순서는 D로 본다.
+실루엣 행 이름에는 lean CSV 시각과, bike_fit이 그린 핸들바 선 힌트(fit_hint)를 썼는지를 표시한다.
 """
 import math
 from pathlib import Path
@@ -53,6 +56,9 @@ def jitter(a):
     return float(np.median(d)) if len(d) else np.nan
 
 
+BINS = [(0.3, 0.5), (0.5, 0.7), (0.7, 0.9)]  # 같은 진행률 구간 비교(뒷모습 창이 런마다 다른 구간에 있어서)
+
+
 def run_stats(seg, cfg, run, tag, tags_alt):
     raw, prep, lean = B.load_run(seg, cfg, run, tag)
     rows = B.compute_rows(raw, prep, lean)
@@ -69,13 +75,23 @@ def run_stats(seg, cfg, run, tag, tags_alt):
     sep3 = col(rows, "bike_lean_body") - col(rows, "torso_roll")
     st = dict(rows=rows, fr=fr, vr=vr, rear=rear, body2d=body2d, fit=fit, lowc=lowc,
               sil=med((fit - body2d)[in_sil]), s3_same=med(sep3[in_sil & ~(conf < 0.3)]), s3_rear=med(sep3[rear]))
-    # 설정 바꿈: 뒷모습 분리각, 상체 롤, 자전거 기울기 중앙값
+    # 설정 바꿈: 뒷모습 분리각, 상체 롤, 자전거 기울기 중앙값 + 같은 진행률 구간 분리각, 최대값
     alt, alt_roll, alt_bike = {}, {}, {}
+    alt_bins = {b: {} for b in BINS + ["peak"]}
 
     def put(name, r2, sel):
-        alt[name] = med((col(r2, "bike_lean_body") - col(r2, "torso_roll"))[sel])[0]
+        s2 = col(r2, "bike_lean_body") - col(r2, "torso_roll")
+        alt[name] = med(s2[sel])[0]
         alt_roll[name] = med(col(r2, "torso_roll")[sel])[0]
         alt_bike[name] = med(col(r2, "bike_lean_body")[sel])[0]
+        p2 = col(r2, "progress")
+        for b in BINS:
+            alt_bins[b][name] = med(s2[(p2 >= b[0]) & (p2 < b[1])])[0]
+        alt_bins["peak"][name] = float(np.nanmax(s2)) if np.isfinite(s2).any() else np.nan
+    p0 = col(rows, "progress")
+    zc = [p0[k] for k in range(1, len(sep3)) if sep3[k - 1] < 0 <= sep3[k]]
+    st["zero_cross"] = zc[0] if zc else np.nan
+    st["alt_bins"] = alt_bins
     put("base", rows, rear)
     for name, kw in (("pitch+10", dict(pitch=10)), ("pitch-10", dict(pitch=-10)),
                      ("yaw+10", dict(yaw_offset=10)), ("yaw-10", dict(yaw_offset=-10)),
@@ -125,8 +141,8 @@ def make_board(seg, cfg, ref, tag, out=None):
             print("  건너뜀", lab, e)
 
     n = len(stats)
-    fig = plt.figure(figsize=(17, 2.25 * n + 7.5), dpi=110)
-    gs = fig.add_gridspec(n + 1, 2, width_ratios=[3.2, 1.3], height_ratios=[1] * n + [3.1], hspace=0.45, wspace=0.12,
+    fig = plt.figure(figsize=(17, 2.25 * n + 9.5), dpi=110)
+    gs = fig.add_gridspec(n + 1, 2, width_ratios=[3.2, 1.3], height_ratios=[1] * n + [4.0], hspace=0.45, wspace=0.12,
                           top=0.965, bottom=0.01)
     fig.suptitle(f"SAM 3D Body 3D 몸 각도 vs 2D·실루엣  (측정값, 설정 {tag}, 중력 = 화면 아래 가정)", fontsize=15, y=0.995)
     for i, (lab, rn, st) in enumerate(stats):
@@ -187,7 +203,13 @@ def make_board(seg, cfg, ref, tag, out=None):
     fmt = lambda v: "" if not np.isfinite(v) else f"{v:+.0f}"
     fmt1 = lambda v: "" if not np.isfinite(v) else f"{v:.1f}"
     alt_names = ["pitch+10", "pitch-10", "yaw+10", "yaw-10", "heading=bar"] + tags_alt
-    tA = [["실루엣 - 2D (separation_board 프레임, 현재 CSV)"] + [fmt(st["sil"][0]) for _, _, st in stats],
+    import datetime
+    lean_csvs = [B.lean_dir(seg, cfg) / f"run{r['run']}.csv" for r in cfg["runs"]]
+    mt = max(p.stat().st_mtime for p in lean_csvs if p.exists())
+    hinted = any("fit_hint" in p.read_text(encoding="utf-8").splitlines()[0] for p in lean_csvs if p.exists())
+    sil_lab = (f"실루엣 - 2D (CSV {datetime.datetime.fromtimestamp(mt):%m-%d %H:%M}"
+               + (", 선 힌트 사용)" if hinted else ")"))
+    tA = [[sil_lab] + [fmt(st["sil"][0]) for _, _, st in stats],
           ["3D 손-발 - 3D 롤 (같은 프레임)"] + [fmt(st["s3_same"][0]) for _, _, st in stats],
           ["3D 손-발 - 3D 롤 (view_ratio>0.75 전체)"] + [fmt(st["s3_rear"][0]) for _, _, st in stats],
           ["  n (실루엣 / 3D 전체)"] + [f"{st['sil'][1]} / {st['s3_rear'][1]}" for _, _, st in stats]]
@@ -203,6 +225,20 @@ def make_board(seg, cfg, ref, tag, out=None):
     tA.append(rng_row("alt", "  3D 분리각 범위 (기본 + 설정 바꿈)"))
     tA.append(rng_row("alt_roll", "  3D 상체 롤 범위 (뒷모습 중앙값)"))
     tA.append(rng_row("alt_bike", "  3D 손-발 자전거 범위 (뒷모습 중앙값)"))
+
+    def bin_row(b, title):
+        out = []
+        for _, _, st in stats:
+            d = st["alt_bins"][b]
+            vals = [v for v in d.values() if np.isfinite(v)]
+            out.append(f"{fmt(d.get('base', np.nan))} ({min(vals):+.0f}~{max(vals):+.0f})" if vals else "")
+        return [title] + out
+    tA.append([""] * (len(labs) + 1))
+    for b in BINS:
+        tA.append(bin_row(b, f"같은 구간 분리각, 진행률 {b[0]:.1f}~{b[1]:.1f}: 기본 (범위)"))
+    tA.append(bin_row("peak", "분리각 최대값 (평활): 기본 (범위)"))
+    tA.append(["분리각이 양수로 넘어가는 진행률"] + [("" if not np.isfinite(st["zero_cross"]) else f"{st['zero_cross']:.2f}")
+                                         for _, _, st in stats])
     tB = [["흔들림: 3D 손-발 (평활 전)"] + [fmt1(st["jit"]["bike3"]) for _, _, st in stats],
           ["흔들림: 실루엣 fit_lean_s (LOW-CONF 제외)"] + [fmt1(st["jit"]["fit"]) for _, _, st in stats],
           ["흔들림: 3D 손-발, 뒷모습만"] + [fmt1(st["jit_rear"]["bike3"]) for _, _, st in stats],
