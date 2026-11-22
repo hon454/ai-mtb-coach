@@ -35,6 +35,7 @@ yaw 0: 카메라에서 멀어지는 방향(완전한 뒷모습). ±90: 옆모습
 출력 열: fit_yaw/lean/pitch/iou, fit_lean_s(평활), fit_back(뒷모습 사전 −1..1),
     fit_lean_unc(거의 같은 손실의 다른 해와의 lean 차, 하한), fit_sign_ambig(1=부호는 연속성이 정함),
     fit_scale(px/m @192), fit_occl(berm_line occl_wheel: 1=바퀴 아래가 앞 둔덕에 가림), fit_axis_err(뒷모습 2D 주축 차),
+    fit_ncomp(주 성분과 떨어진 가늘고 긴 마스크 성분 수, 진단용 — 덮기 항 W_COMP는 현재 0),
     fit_lowconf(1=IoU<0.45, 또는 |yaw|<35에서 IoU<0.55·주축 차>10°·lean_unc>15° → 분리각 통계에서 제외).
     bike 블록: wheel_radius_front/rear(멀렛), bb_height(>0이면 허브 높이 = 반지름 − BB 높이), 예전 wheel_radius도 허용.
 한계: 정사영(원근 무시), 카메라 수평 가정 — 옆모습의 lean 크기는 카메라 높이각만큼 오차가 날 수 있다.
@@ -290,12 +291,12 @@ def iou(Rm, M, valid):
 #   엉덩이 중점 ↔ BB 위·뒤의 그럴듯한 위치. 거리는 mm(px/s)로 재고 신뢰도로 가중.
 #   좌우 라벨은 쓰지 않고 가까운 쪽에 붙이므로 거울쌍에 대해 불변.
 #   kpts 항목 (x, y, w, kind): 0=손목, 1=발목, 2=머리(x=(머리−엉덩이).x/몸통), 3=크기 사전(x=log s0), 4=엉덩이 중점,
-#   5=마스크 최저 y = 타이어 최저점 (berm_line의 occl_wheel=0: 접지가 보이는 프레임),
+#   5=마스크 최저 y = 타이어 최저점 (양방향; 현재 미사용 — occl_wheel=0을 믿을 수 없어 끔, run_one 주석),
 #   6=마스크 최저 y는 가림선 → 타이어 최저점이 그보다 아래 (occl_wheel=1; 그 아래 픽셀은 IoU에서 제외)
 W_KP = 0.3
 # 마스크 아래끝 ↔ 타이어 최저점: 뱅크 앞 둔덕이 바퀴 아래를 가리는 프레임이 많다(정면 뒷모습은 거의 전부).
 # 가림 여부를 모르고 양방향으로 맞추면 lean이 부풀었다(run4 f212·f216 +40~50°) → berm_line.py의 occl_wheel로 구분해
-# 보이는 접지만 양방향(5), 가려진 프레임은 단방향(6) + 아래쪽 무시.
+# 가려진 프레임(occl_wheel=1)만 단방향(6) + 아래쪽 무시. occl_wheel=0은 바닥 정보 없음으로 취급.
 W_GROUND = 0.12
 KP_TOL = {0: (60.0, 150.0), 1: (110.0, 150.0), 4: (250.0, 200.0)}  # kind: (허용 mm, 척도 mm)
 W_HEAD = 0.15  # 머리가 엉덩이보다 진행 방향 쪽에 있다는 사전 (옆모습에서만 작동, lean과 무관)
@@ -326,6 +327,8 @@ def kp_term(auv, s, tx, ty, kpts):
     a = auv * s + [tx, ty]
     tot, ws, extra = 0.0, 0.0, 0.0
     for x, y, w, kind in kpts:
+        if kind == 7:
+            continue
         if kind == 2:  # 진행 방향의 화면 x성분과 (머리−엉덩이) 부호가 반대면 벌점
             fx = (auv[3, 0] - auv[2, 0]) / 1000.0
             if fx * x < 0:
@@ -350,13 +353,32 @@ def kp_term(auv, s, tx, ty, kpts):
     return W_KP * tot / max(ws, 2.0) + extra
 
 
+# 따로 떨어진 가는 마스크 성분(예: 다리 옆으로 보이는 앞바퀴 띠)은 IoU에서 픽셀 수가 적어 무시되기 쉽다.
+# → 이런 성분은 모델의 어느 부분이든 덮어야 한다는 항. kpts 항목 (성분 bool 배열, 픽셀 수, w, 7).
+# 현재 꺼 둠(0): run4 f205–f222 시험에서 이 항이 성분을 yaw가 아니라 lean으로 덮으려 해 lean이 부풀었다
+# (W=0.15: f212 +41°, 0.05: f209–f222 +29~45°, 0.03: f212는 유지되나 f216 띠는 여전히 안 덮이고 f221 +30°).
+# 성분 탐지(fit_ncomp)는 진단용으로 남긴다.
+W_COMP = 0.0
+
+
+def comp_term(Rm, kpts):
+    t = 0.0
+    for cm, area, w, kind in kpts:
+        if kind == 7:
+            t += W_COMP * w * (1.0 - np.count_nonzero(Rm & cm) / max(area, 1))
+    return t
+
+
 def loss(params, M, valid, kpts=None, parts=False):
     if abs(params[2]) > PITCH_MAX or abs(params[1]) > LEAN_MAX:
         return 1.0 + abs(params[2]) + abs(params[1])
     R = rot(*params[:3])
     s = math.exp(params[3])
-    v = iou(raster(unit_uv(R), s, params[4], params[5], M.shape[0]) > 0, M, valid)
+    Rm = raster(unit_uv(R), s, params[4], params[5], M.shape[0]) > 0
+    v = iou(Rm, M, valid)
     h = kp_term(anchor_uv(R), s, params[4], params[5], kpts)
+    if kpts:
+        h += comp_term(Rm, kpts)
     return (v, h) if parts else 1.0 - v + h
 
 
@@ -395,6 +417,7 @@ def coarse_scores(Mc, Ic, kpts):
     S = np.zeros(len(uvs))
     params = np.zeros((len(uvs), 3))
     ls0 = next((x for x, _, _, k in kpts if k == 3), None)
+    has_comp = any(k == 7 for _, _, _, k in kpts)
     for i, (uv, b, hv) in enumerate(zip(uvs, boxes, huvs)):
         wu, hu = b[2] - b[0], b[3] - b[1]
         if ls0 is None:
@@ -405,7 +428,8 @@ def coarse_scores(Mc, Ic, kpts):
             s = math.exp(ls0)
             tx = cxm - s * (b[0] + b[2]) / 2
             ty = y1 - s * b[3]
-        S[i] = iou(raster(uv, s, tx, ty, CGRID) > 0, Mc, valid) - kp_term(hv, s, tx, ty, kpts)
+        Rc = raster(uv, s, tx, ty, CGRID) > 0
+        S[i] = iou(Rc, Mc, valid) - kp_term(hv, s, tx, ty, kpts) - (comp_term(Rc, kpts) if has_comp else 0.0)
         params[i] = (math.log(s), tx, ty)
     return S.reshape(len(C_YAW), len(C_LEAN), len(C_PITCH)), params
 
@@ -424,8 +448,14 @@ def fit_frame(args):
     M, I, K, hand = args
     valid = ~I
     kc = CGRID / GRID
-    hand_c = [(x, y, w, k) if k == 2 else (x + math.log(kc), y, w, k) if k == 3
-              else (x * kc, y, w, k) if k in (5, 6) else (x * kc, y * kc, w, k) for x, y, w, k in hand]
+    hand_c = []
+    for x, y, w, k in hand:
+        if k == 7:  # 성분 마스크를 거친 해상도로
+            cm = cv2.resize(x.astype(np.uint8), (CGRID, CGRID), interpolation=cv2.INTER_AREA) > 0
+            hand_c.append((cm, max(1, int(cm.sum())), w, k))
+        else:
+            hand_c.append((x, y, w, k) if k == 2 else (x + math.log(kc), y, w, k) if k == 3
+                          else (x * kc, y, w, k) if k in (5, 6) else (x * kc, y * kc, w, k))
     Mc = cv2.resize(M.astype(np.uint8), (CGRID, CGRID), interpolation=cv2.INTER_AREA) > 0
     Ic = cv2.resize(I.astype(np.uint8), (CGRID, CGRID), interpolation=cv2.INTER_AREA) > 0
     S, sp = coarse_scores(Mc, Ic, hand_c)
@@ -749,6 +779,51 @@ LEAN_UNC_TOL = 15.0  # fit_lean_unc가 이보다 크면(뒷모습) 저신뢰
 AXIS_TOL = 10.0  # 뒷모습(|yaw|<20)에서 마스크와 모델의 2D 주축이 이보다 다르면 저신뢰
 
 
+COMP_MIN_AREA, COMP_MIN_ELONG, COMP_MIN_LEN = 30, 2.2, 0.35  # 192px 기준 / √λ비 / 주 성분 높이 대비
+
+
+def side_components(M, valid):
+    """주 성분과 따로 떨어진 가늘고 긴 마스크 성분 (먼지·신발 조각 배제: 크기·길쭉함·길이·높이 겹침)."""
+    n, lab, st, cen = cv2.connectedComponentsWithStats((M & valid).astype(np.uint8), connectivity=8)
+    if n <= 2:
+        return []
+    main = 1 + int(np.argmax(st[1:, 4]))
+    my0, mh = st[main, 1], st[main, 3]
+    out = []
+    for i in range(1, n):
+        if i == main or st[i, 4] < COMP_MIN_AREA:
+            continue
+        cm = lab == i
+        ang, el = _axis(cm)
+        length = math.hypot(st[i, 2], st[i, 3])
+        y0, h = st[i, 1], st[i, 3]
+        ov = max(0, min(y0 + h, my0 + mh) - max(y0, my0)) / max(h, 1)
+        if el < COMP_MIN_ELONG or length < COMP_MIN_LEN * mh or ov < 0.6:
+            continue  # 둥근 조각(먼지·신발), 짧은 조각, 주 성분 아래(그림자)
+        out.append(dict(mask=cm, area=int(st[i, 4]), c=cen[i], ang=ang, mh=mh))
+    return out
+
+
+def persistent_components(comps, cents, frames_no):
+    """이웃(±2프레임 이내) 중 하나에 비슷한 위치(마스크 무게중심 기준)·방향의 성분이 있는 것만 남김."""
+    keep = []
+    for t, cs in enumerate(comps):
+        k = []
+        for c in cs:
+            rel = c["c"] - cents[t]
+            ok = False
+            for u in (t - 2, t - 1, t + 1, t + 2):
+                if 0 <= u < len(comps) and abs(frames_no[u] - frames_no[t]) <= 3:
+                    for d in comps[u]:
+                        da = abs(c["ang"] - d["ang"]) % 180
+                        if np.linalg.norm((d["c"] - cents[u]) - rel) < 0.3 * c["mh"] and min(da, 180 - da) < 25:
+                            ok = True
+            if ok:
+                k.append(c)
+        keep.append(k[:2])
+    return keep
+
+
 def load_occlusion(out, run):
     """berm_line.py 결과(<feature>_berm/run<N>.csv)의 occl_wheel: 1=바퀴 아래가 앞 둔덕에 가림, 0=접지가 보임."""
     p = out.parent / out.name.replace("_lean", "_berm") / f"run{run}.csv"
@@ -795,7 +870,7 @@ def run_one(r, out, pose_m, pool, K):
     (out / "overlay_fit").mkdir(exist_ok=True)
     for x in rows:
         for k in ("fit_yaw", "fit_lean", "fit_pitch", "fit_iou", "fit_lean_s", "fit_back", "fit_lean_unc", "fit_sign_ambig",
-                  "fit_scale", "fit_occl", "fit_axis_err", "fit_lowconf"):
+                  "fit_scale", "fit_occl", "fit_axis_err", "fit_lowconf", "fit_ncomp"):
             x[k] = ""
     jobs, meta, kps, torsos = [], [], [], []
     occl = load_occlusion(out, run)
@@ -821,13 +896,22 @@ def run_one(r, out, pose_m, pool, K):
             I = I.copy()
             I[int(ybot) + 1:, :] = True
             kpl.append((ybot, 0.0, 1.0, 6))
-        elif oc == 0:   # 접지가 보임: 타이어 최저점 = 마스크 아래끝
-            kpl.append((ybot, 0.0, 1.0, 5))
+        # oc == 0 (접지가 보인다고 표시된 프레임)에 '타이어 최저점 = 마스크 아래끝'을 양방향으로 걸면 run4 f212가
+        # yaw +11 / lean −3으로 뒤집혔다(절제 실험: 이 항 하나만 끄면 fix2와 같은 +24/+16). occl_wheel=0이 실제로는
+        # 둔덕 립에 걸린 프레임도 있어 믿기 어려움 → 0이면 바닥 정보 없음으로 취급.
         x["fit_occl"] = "" if oc is None else oc
         jobs.append((M, I, K, kpl))
         kps.append(kp)
         torsos.append(torso_len(kp, GRID))
         meta.append((x, name, back_prior(kp, x.get("view_ratio"))))
+    # 따로 떨어진 가는 성분(앞바퀴 띠 등): 이웃 프레임에도 있는 것만 '덮어야 할 성분'으로
+    comps = [side_components(j[0], ~j[1]) for j in jobs]
+    cents = [np.argwhere(j[0]).mean(0)[::-1] for j in jobs]
+    comps = persistent_components(comps, cents, [int(m[0]["frame"]) for m in meta])
+    for i, cs in enumerate(comps):
+        M_, I_, K_, kp_ = jobs[i]
+        jobs[i] = (M_, I_, K_, kp_ + [(c["mask"], c["area"], 1.0, 7) for c in cs])
+        meta[i][0]["fit_ncomp"] = len(cs)
     t1 = time.time()
     # 1차: 크기 자유 → 두 바퀴가 다 보이는 비스듬/옆모습 고IoU 프레임에서 런 단위 크기 추정
     frames, sel = solve(jobs, meta, pool)
