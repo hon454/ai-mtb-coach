@@ -30,6 +30,7 @@ ai-mtb-coach: MTB 강습 영상(코치님 카톡 영상 + 텍스트 피드백)�
   - `body3d_gvhmr.py` GVHMR 중력 기준 3D 몸 자세(상체 롤·피치, 손·발 자전거 평면, 엉덩이 오프셋). infer는 WSL의 `$GVHMR_HOME` 환경에서 돌림
   - `body3d_sam3d.py` SAM 3D Body 3D 몸 각도(상체 롤·피치, 손-발 자전거 기울기). infer 단계는 `$SAM3DBODY_HOME`의 별도 환경. `body3d_board.py`는 비교 보드. `--gravity gvhmr`로 GVHMR 중력 사용
   - `body3d_vs_gvhmr.py` SAM 3D Body vs GVHMR 프레임별 비교, 그린 핸들바 선 채점, Run 5 손-발 차이 진단
+  - `body_com.py` 몸 무게중심(GVHMR 관절 + 체절 질량 비율): 무게선 기울기, 자전거 면에서 바깥 거리, 높이, 회전 단계별 보드. `stature`는 WSL GVHMR 환경에서. 키·몸무게는 `sessions/rider.local.json`(git 제외)에서 읽음
 - `sessions/<세션>/` 강습별 설정(git 추적): `segments.json`(구간·자전거), `insights/*.json`(보드 spec), `berm_prompts.json`·`berm_board_captions.json`(뱅크 수동 프롬프트·캡션)
 - `reference/<세션>/` 원본 영상(git 제외). 파일명 `<세션>_run<N>.mp4` 등
 - `outputs/<세션>/` 모든 산출물(git 제외): `<feature>_pose`, `_lean`, `_berm`, `insights/`

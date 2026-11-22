@@ -634,9 +634,10 @@ def lean_rows_of(seg, cfg, run):
 FONT = "C:/Windows/Fonts/malgun.ttf"
 
 
-def render_tile(img, verts, faces, K, Jc, up_c, row, box, tile=420, line="handfoot", header=None):
-    """line: \"handfoot\" = 발목 중점→손목 중점(자전거 평면 근사), \"grip\" = 왼손목–오른손목 선(핸들바 근사)을 양쪽으로 늘여 그림.
-    header: 위 띠에 쓸 두 줄(없으면 각도 요약)."""
+def render_tile(img, verts, faces, K, Jc, up_c, row, box, tile=420, line="handfoot", header=None, draw=None):
+    """line: \"handfoot\" = 발목 중점→손목 중점(자전거 평면 근사), \"grip\" = 왼손목–오른손목 선(핸들바 근사)을 양쪽으로 늘여 그림,
+    \"none\" = 선 없음. header: 위 띠에 쓸 두 줄(없으면 각도 요약).
+    draw: draw(out_bgr, P)를 글자 띠 전에 부름. P(X) = 카메라 좌표 3D 점 → 타일 픽셀 (body_com.py가 무게중심을 그림)."""
     import cv2
     from PIL import Image, ImageDraw, ImageFont
     x0, y0, x1, y1 = box
@@ -678,11 +679,13 @@ def render_tile(img, verts, faces, K, Jc, up_c, row, box, tile=420, line="handfo
         cv2.line(out, P(L_ + 0.6 * (L_ - R_)), P(R_ + 0.6 * (R_ - L_)), (0, 200, 255), 3, cv2.LINE_AA)   # 손목선(핸들바 근사)
         for X in (L_, R_):
             cv2.circle(out, P(X), 5, (0, 200, 255), -1, cv2.LINE_AA)
-    else:
+    elif line == "handfoot":
         ext = A + 1.25 * (W - A)
         cv2.line(out, P(A - 0.15 * (W - A)), P(ext), (0, 200, 255), 2, cv2.LINE_AA)        # 발목중점→손목중점
         for X in (W, A):
             cv2.circle(out, P(X), 5, (0, 200, 255), -1, cv2.LINE_AA)
+    if draw is not None:
+        draw(out, P)
     im = Image.fromarray(cv2.cvtColor(out, cv2.COLOR_BGR2RGB))
     dr = ImageDraw.Draw(im)
     f1, f2 = ImageFont.truetype(FONT, 17), ImageFont.truetype(FONT, 15)
